@@ -1,0 +1,19 @@
+# env
+.env
+.env.*.local
+
+# build output
+/bin/
+/out/
+*.exe
+
+# test / coverage
+*.out
+coverage.*
+.gotmp/
+.testbin/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/

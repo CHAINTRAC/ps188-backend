@@ -1,0 +1,6 @@
+# Keep LF in the repo regardless of platform.
+* text=auto eol=lf
+*.go text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf

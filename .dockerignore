@@ -1,0 +1,12 @@
+.git
+docs
+*.md
+.env
+.env.*.local
+.env.example
+bin
+out
+*.exe
+.idea
+.vscode
+docker-compose.yml
