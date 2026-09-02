@@ -83,8 +83,8 @@ func (s *UserService) Profile(ctx context.Context, userID string) (model.UserVie
 	return u.View(), nil
 }
 
-// SeedAdmin creates the bootstrap admin when the users collection is empty.
-// It is a no-op on every subsequent boot.
+// SeedAdmin creates the bootstrap super admin when the users collection is
+// empty. It is a no-op on every subsequent boot.
 func (s *UserService) SeedAdmin(ctx context.Context, username, password, email string) (bool, error) {
 	n, err := s.users.Count(ctx)
 	if err != nil {
@@ -99,10 +99,10 @@ func (s *UserService) SeedAdmin(ctx context.Context, username, password, email s
 	}
 	_, err = s.users.Create(ctx, &model.User{
 		Username:     strings.ToLower(username),
-		FullName:     "Bootstrap Admin",
+		FullName:     "Bootstrap Super Admin",
 		Email:        strings.ToLower(email),
 		PasswordHash: string(hash),
-		Role:         model.RoleAdmin,
+		Role:         model.RoleSuperAdmin,
 		Status:       model.UserActive,
 	})
 	if err != nil {

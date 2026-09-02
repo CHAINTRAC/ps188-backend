@@ -48,18 +48,20 @@ const (
 	StatusFailed     ScreeningStatus = "failed"
 )
 
-// Decision is the officer's manual call on top of the machine verdict.
+// Decision is the officer's manual call on top of the machine verdict. Values
+// match the operator-facing UI: accept the document, escalate for review, or
+// reject it.
 type Decision string
 
 const (
-	DecisionClear  Decision = "clear"
-	DecisionRefer  Decision = "refer"
-	DecisionDetain Decision = "detain"
+	DecisionAccept   Decision = "accept"
+	DecisionEscalate Decision = "escalate"
+	DecisionReject   Decision = "reject"
 )
 
 func (d Decision) Valid() bool {
 	switch d {
-	case DecisionClear, DecisionRefer, DecisionDetain:
+	case DecisionAccept, DecisionEscalate, DecisionReject:
 		return true
 	}
 	return false

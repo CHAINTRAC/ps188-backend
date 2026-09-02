@@ -57,6 +57,7 @@ func run(log *slog.Logger) error {
 	userRepo := repository.NewUserRepository(db)
 	screeningRepo := repository.NewScreeningRepository(db)
 	auditRepo := repository.NewAuditRepository(db)
+	blacklistRepo := repository.NewBlacklistRepository(db)
 
 	// External screening engine.
 	var engine screening.Engine
@@ -74,17 +75,18 @@ func run(log *slog.Logger) error {
 	authSvc := service.NewAuthService(userRepo, jwtMgr)
 	userSvc := service.NewUserService(userRepo, auditRepo)
 	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, storage.NewGridFS(db), engine, log)
+	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo)
 
 	if seeded, err := userSvc.SeedAdmin(ctx, cfg.AdminUsername, cfg.AdminPassword, cfg.AdminEmail); err != nil {
 		return err
 	} else if seeded {
-		log.Warn("seeded bootstrap admin — change the password immediately",
+		log.Warn("seeded bootstrap super admin — change the password immediately",
 			slog.String("username", cfg.AdminUsername))
 	}
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Cfg: cfg, Log: log, Mongo: db, JWT: jwtMgr,
-		Auth: authSvc, Users: userSvc, Screenings: screeningSvc,
+		Auth: authSvc, Users: userSvc, Screenings: screeningSvc, Blacklist: blacklistSvc,
 	})
 
 	srv := &http.Server{

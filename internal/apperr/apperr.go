@@ -65,6 +65,7 @@ func def(msg string, code, status int) *AppError {
 //	4xxxx  screenings
 //	5xxxx  files / storage
 //	6xxxx  external screening engine
+//	7xxxx  blacklist
 //
 // Add every new error here as a named field — reference it, never build one inline.
 var ERRORS = struct {
@@ -112,6 +113,12 @@ var ERRORS = struct {
 	// external screening engine (6xxxx)
 	ScreeningEngineUnavailable *AppError
 	ScreeningEngineBadResponse *AppError
+
+	// blacklist (7xxxx)
+	BlacklistEntryNotFound *AppError
+	BlacklistEntryExists   *AppError
+	InvalidBlacklistKind   *AppError
+	BlacklistFieldsMissing *AppError
 }{
 	DatabaseError:      def("Database operation failed", 10001, 500),
 	InvalidRequestBody: def("Invalid request body", 10002, 400),
@@ -142,7 +149,7 @@ var ERRORS = struct {
 	AlreadyDecided:        def("This screening already has an officer decision", 40002, 409),
 	InvalidDocType:        def("Unknown document type", 40003, 422),
 	ScreeningNotCompleted: def("Screening has not finished processing", 40004, 409),
-	InvalidDecision:       def("Decision must be one of clear, refer, detain", 40005, 422),
+	InvalidDecision:       def("Decision must be one of accept, escalate, reject", 40005, 422),
 
 	FileRequired:    def("A document image file is required", 50001, 400),
 	FileTooLarge:    def("Uploaded file is too large", 50002, 413),
@@ -151,4 +158,9 @@ var ERRORS = struct {
 
 	ScreeningEngineUnavailable: def("The screening service is unavailable", 60001, 502),
 	ScreeningEngineBadResponse: def("The screening service returned an unexpected response", 60002, 502),
+
+	BlacklistEntryNotFound: def("Blacklist entry not found", 70001, 404),
+	BlacklistEntryExists:   def("An active blacklist entry already matches this", 70002, 409),
+	InvalidBlacklistKind:   def("Blacklist kind must be one of document, identity", 70003, 422),
+	BlacklistFieldsMissing: def("Missing required fields for this blacklist kind", 70004, 422),
 }

@@ -40,19 +40,22 @@ Go 1.26 · Gin · MongoDB (`mongo-driver/v2`) · JWT · bcrypt(12) · `log/slog`
 Docker Compose (backend + MongoDB).
 
 **Single deployment, role-based access.** One MongoDB database. No multi-tenancy, no
-org registry, no per-agency databases — this is one checkpoint / one agency install.
-Two roles:
+per-agency databases — this is one agency install. Three roles (names match the
+operator-facing UI):
 
 | Role | Can |
 |---|---|
-| `supervisor` | the checkpoint officer — submit screenings, view them, record a decision |
-| `admin` | manage user accounts (create / list); also has full read access to screenings |
+| `verifier` | the checkpoint officer — submit screenings, view them, record a decision, run blacklist checks |
+| `admin` | everything a verifier's account needs: create / list verifier accounts, manage the blacklist; full read access to screenings |
+| `superadmin` | everything an `admin` can, plus manage `admin` accounts — org-wide |
 
-Accounts are created by an `admin`. First run seeds one bootstrap admin from
-`ADMIN_USERNAME` / `ADMIN_PASSWORD` (only while the `users` collection is empty).
+Admin-level routes are authorised for **both** `admin` and `superadmin`
+(`RequireRole(admin, superadmin)`). Accounts are created by an `admin` or
+`superadmin`. First run seeds one bootstrap `superadmin` from `ADMIN_USERNAME` /
+`ADMIN_PASSWORD` (only while the `users` collection is empty).
 
 > "Officer" throughout this doc and the code (`officer_id`, `officer_decision`) means
-> the human working the checkpoint — always a `supervisor`-role user. It is a job
+> the human working the checkpoint — always a `verifier`-role user. It is a job
 > description, not a separate RBAC role.
 
 ---
@@ -108,8 +111,8 @@ Access token TTL `JWT_ACCESS_TTL` (default 1h); refresh `JWT_REFRESH_TTL` (defau
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/profile` | any authed | Own `UserView` |
-| POST | `/` | admin | Create a user: `{username, full_name, email, password, role}`. `USERNAME_TAKEN` / `EMAIL_TAKEN` on conflict, `INVALID_ROLE` for an unknown role. Audit: `user.created`. |
-| GET | `/` | admin | Cursor-paginated `UserView[]` |
+| POST | `/` | admin / superadmin | Create a user: `{username, full_name, email, password, role}`. `USERNAME_TAKEN` / `EMAIL_TAKEN` on conflict, `INVALID_ROLE` for an unknown role. Audit: `user.created`. |
+| GET | `/` | admin / superadmin | Cursor-paginated `UserView[]` |
 
 ### 4.3 Screenings — `/api/screenings`  (all require auth)
 
@@ -118,26 +121,45 @@ engine's result + (optionally) an officer's decision.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| POST | `/` | supervisor | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `checkpoint_id`. Flow in §5. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
+| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `checkpoint_id`. Flow in §5. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
 | GET | `/` | any authed | List. Filters `?verdict=&doc_type=&status=&checkpoint_id=`, cursor-paginated, newest first. |
 | GET | `/:id` | any authed | Full detail incl. `engine.evidence` (the explainability table) and `engine.reasons`. |
 | GET | `/:id/image` | any authed | Streams the stored document image (from GridFS), `Content-Type` sniffed. |
-| POST | `/:id/decision` | supervisor | Record the officer's manual call: `{decision: clear\|refer\|detain, reason}`. Exactly one per screening — a second call → `ALREADY_DECIDED` (40002). Not allowed while `status=processing` → `SCREENING_NOT_COMPLETED` (40004). Audit: `screening.decided`. |
+| POST | `/:id/decision` | verifier | Record the officer's manual call: `{decision: accept\|escalate\|reject, reason}` (names match the UI). Exactly one per screening — a second call → `ALREADY_DECIDED` (40002). Not allowed while `status=processing` → `SCREENING_NOT_COMPLETED` (40004). Audit: `screening.decided` (`new_data.detail` = `screening.decided · ACCEPT\|ESCALATE\|REJECT`). |
 
-### 4.4 Audit trail (internal)
+### 4.4 Blacklist — `/api/blacklist`  (all require auth)
+
+Blacklisted document numbers and identities — the PS lines "expired or blacklisted
+travel documents" and "multiple identities used by the same person". Admin-managed;
+the read-side `check` is open to verifiers so the checkpoint can screen against it.
+Entries are deactivated, never deleted.
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/check` | any authed | `?doc_number=&name=&dob=&nationality=` → `{hit, matches[]}`. Normalised (case-insensitive) match against **active** entries. Never blocks — informational. |
+| POST | `/` | admin / superadmin | Add an entry: `{kind: document\|identity, doc_number?, name?, dob?, nationality?, reason, source?}`. `INVALID_BLACKLIST_KIND` (70003), `BLACKLIST_FIELDS_MISSING` (70004) if the kind's required fields are absent, `BLACKLIST_ENTRY_EXISTS` (70002) if an active entry already matches. Audit: `blacklist.added`. |
+| GET | `/` | admin / superadmin | List. Filters `?kind=&active=`, cursor-paginated, newest first. |
+| GET | `/:id` | admin / superadmin | One `BlacklistView`. `BLACKLIST_ENTRY_NOT_FOUND` (70001). |
+| POST | `/:id/deactivate` | admin / superadmin | Flip `active` to `false`. Audit: `blacklist.deactivated`. |
+
+> Wiring `BlacklistService.Check` into the screening `Submit` flow (raise a
+> `blacklist_hit` flag, bump `risk_score`) is a follow-up — the service method is
+> ready; only the `Submit` call site and a `flags[]` field on `screenings` are missing.
+
+### 4.5 Audit trail (internal)
 
 `audit_logs` is written by services on every state-changing operation
-(`user.created`, `screening.submitted`, `screening.decided`) with `old_data`/`new_data`
-snapshots and the actor's IP. **Append-only** — `AuditRepository` exposes `Insert`
-only. A read API (`GET /api/audit-logs`, admin) is a planned addition (§7), not in the
-current slice.
+(`user.created`, `screening.submitted`, `screening.decided`, `blacklist.added`,
+`blacklist.deactivated`) with `old_data`/`new_data` snapshots and the actor's IP.
+**Append-only** — `AuditRepository` exposes `Insert` only. A read API
+(`GET /api/audit-logs`, admin) is a planned addition (§8), not in the current slice.
 
 ---
 
 ## 5. The Screening Lifecycle
 
 ```
-        POST /api/screenings   (supervisor, multipart image)
+        POST /api/screenings   (verifier, multipart image)
                     │
                     ▼
      ┌─ validate doc_type, file type & size ─┐  → 4xx / 5xx, nothing stored
@@ -167,10 +189,10 @@ current slice.
         audit: screening.submitted        ← case is now returned to the officer
                     │
                     ▼
-        POST /api/screenings/:id/decision   (supervisor)
+        POST /api/screenings/:id/decision   (verifier)
              guard: status != processing ; officer_decision not already set
                     ▼
-        embed officer_decision { decision: clear|refer|detain, reason, decided_by, decided_at }
+        embed officer_decision { decision: accept|escalate|reject, reason, decided_by, decided_at }
         audit: screening.decided
 ```
 
@@ -178,8 +200,8 @@ current slice.
 
 1. A failed engine call is **not** a failed request. The case is persisted with
    `status=failed` + `failure_reason` and returned `201` — the officer still sees the
-   document and can `detain`/`refer` on judgement. This is deliberate: the model being
-   down must not block a checkpoint.
+   document and can `reject`/`escalate` on judgement. This is deliberate: the model
+   being down must not block a checkpoint.
 2. `reference_no` is allocated from an atomic per-day counter
    (`counters` collection, `FindOneAndUpdate` + `$inc` + upsert) — gapless, race-safe.
 3. Exactly one `officer_decision` per screening, enforced by a **conditional update**
@@ -239,6 +261,7 @@ changes — the rest of the backend already carries all five `DocType`s.
 | 4xxxx | Screenings | `SCREENING_NOT_FOUND` 40001·404, `ALREADY_DECIDED` 40002·409, `INVALID_DOC_TYPE` 40003·422, `SCREENING_NOT_COMPLETED` 40004·409, `INVALID_DECISION` 40005·422 |
 | 5xxxx | Files / storage | `FILE_REQUIRED` 50001·400, `FILE_TOO_LARGE` 50002·413, `INVALID_FILE_TYPE` 50003·422, `STORAGE_FAILED` 50004·500 |
 | 6xxxx | External screening engine | `SCREENING_ENGINE_UNAVAILABLE` 60001·502, `SCREENING_ENGINE_BAD_RESPONSE` 60002·502 |
+| 7xxxx | Blacklist | `BLACKLIST_ENTRY_NOT_FOUND` 70001·404, `BLACKLIST_ENTRY_EXISTS` 70002·409, `INVALID_BLACKLIST_KIND` 70003·422, `BLACKLIST_FIELDS_MISSING` 70004·422 |
 
 All in `internal/apperr/apperr.go`'s `ERRORS` — never an inline `&AppError{}` (guide §4).
 
@@ -253,7 +276,7 @@ vertical slice per the guide's checklist.
 |---|---|
 | **Checkpoints** (`/api/checkpoints`) | Named checkpoint registry so `checkpoint_id` on a screening is a real reference, not a free string. Admin-managed. |
 | **Face Verification** (`/api/screenings/:id/face`, PS Module 4) | Officer captures a live photo; a `FaceEngine` (interface, like `screening.Engine`) compares it to the document portrait; result appended to the screening as `face_verification { score, matched, captured_image_file_id }`. |
-| **Watchlist** (`/api/watchlist`) | Blacklisted / expired document numbers and identities; checked during `Submit`, contributing to `risk_score` and raising a flag. |
+| **Blacklist ↔ screening wiring** | The `/api/blacklist` module is built (§4.4). What's left: call `BlacklistService.Check` inside `ScreeningService.Submit`, add a `flags[]` field to `screenings`, raise `blacklist_hit` + bump `risk_score` on a match, and add an `expired_document` flag from the extracted/entered expiry date. |
 | **Cases** (`/api/cases`) | Group multiple screenings of the same traveller (multiple-identity detection); investigator notes; export. |
 | **Audit read API** (`GET /api/audit-logs`, admin) | Paginated, filters `?action=&reference_type=&reference_id=`. Repo stays `Insert`-only; a `Find` method is additive. |
 | **Dashboard** (`/api/dashboard/summary`) | Aggregate counts (screenings today, by verdict, pending decisions, engine failures 24h) — single aggregation queries. |
@@ -279,13 +302,16 @@ No test mocks a repository or a service. MongoDB comes from `docker compose up`.
    middleware, `main.go`, Docker. *(done)*
 2. **Auth + Users** — login, refresh, RBAC, admin-seeded accounts. *(done)*
 3. **Screenings vertical slice** — model → repo → service → handlers: submit (GridFS +
-   engine call + persist), list, get, image, decision; audit logging. *(done — the
-   current slice)*
-4. **Checkpoints** registry.
-5. **Face Verification** module (PS Module 4) behind a `FaceEngine` interface.
-6. **Watchlist** + risk contribution.
-7. **Cases** (multiple-identity linking) + **Audit read API** + **Dashboard**.
-8. Point `SCREENING_ENGINE=http` at the deployed FastAPI model; load-test; deploy.
+   engine call + persist), list, get, image, decision; audit logging. *(done)*
+4. **Three-role model** — `verifier` / `admin` / `superadmin`; admin routes accept
+   admin + superadmin; bootstrap seed is a superadmin. *(done)*
+5. **Blacklist** module — document/identity entries, admin CRUD + deactivate, verifier
+   `check`. *(done — screening-flow wiring is the remaining follow-up, §8)*
+6. **Checkpoints** registry.
+7. **Face Verification** module (PS Module 4) behind a `FaceEngine` interface.
+8. **Blacklist ↔ Submit wiring** + expiry check + risk contribution.
+9. **Cases** (multiple-identity linking) + **Audit read API** + **Dashboard**.
+10. Point `SCREENING_ENGINE=http` at the deployed FastAPI model; load-test; deploy.
 
 Each step = model → repository (+ real-DB tests) → service (+ tests, engine stubbed) →
 handler → route registration, per `BACKEND_GUIDE.md` §18.

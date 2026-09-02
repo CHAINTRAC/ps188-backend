@@ -3,11 +3,12 @@
 Backend for **PS188 — AI-Based Fake Identity & Document Screening System**
 (SIH 2026, PS 26188 — Ministry of Home Affairs / SSB).
 
-A border-checkpoint officer (a `supervisor`-role user) submits an identity/travel
+A border-checkpoint officer (a `verifier`-role user) submits an identity/travel
 document; the backend stores the case, calls an externally-hosted AI screening model,
 persists the **risk score + explainable verdict**, and lets them record a manual
-decision — with a full append-only audit trail. Two roles: `supervisor` (checkpoint)
-and `admin` (account management).
+decision — with a full append-only audit trail. Three roles: `verifier` (works the
+checkpoint), `admin` (manages verifier accounts + the blacklist for a region), and
+`superadmin` (manages admins and everything an admin can, org-wide).
 
 **Stack:** Go 1.26 · Gin · MongoDB (`mongo-driver/v2`) · JWT · Docker Compose.
 The AI model itself lives in `../Al-Based-Fake-Identity-Document-Screening-System/`
@@ -32,27 +33,35 @@ docker compose up --build
 - MongoDB comes up first (healthcheck-gated), then the backend on **:8080**.
 - `SCREENING_ENGINE=mock` by default — the stack runs with **no external model**.
   Set `SCREENING_ENGINE=http` + `SCREENING_SERVICE_URL=...` to use the real FastAPI model.
-- First boot seeds an admin: `ADMIN_USERNAME` / `ADMIN_PASSWORD` (`admin` / `admin12345`).
+- First boot seeds a super admin: `ADMIN_USERNAME` / `ADMIN_PASSWORD` (`admin` / `admin12345`).
 
 ```bash
 curl localhost:8080/health
 
-# login as the seeded admin
+# login as the seeded super admin
 curl -s -XPOST localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin12345"}'
 
-# create a supervisor (admin token)
+# create a verifier (admin or superadmin token)
 curl -s -XPOST localhost:8080/api/users -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"sup.jane","full_name":"Jane","email":"jane@ps188.local","password":"jane12345","role":"supervisor"}'
+  -d '{"username":"v.jane","full_name":"Jane","email":"jane@ps188.local","password":"jane12345","role":"verifier"}'
 
-# submit a screening (supervisor token)
-curl -s -XPOST localhost:8080/api/screenings -H "Authorization: Bearer $SUPERVISOR" \
+# blacklist a stolen passport number (admin or superadmin token)
+curl -s -XPOST localhost:8080/api/blacklist -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"document","doc_number":"Z1234567","reason":"reported stolen","source":"Interpol SLTD"}'
+
+# check a document against the blacklist (any authenticated user)
+curl -s "localhost:8080/api/blacklist/check?doc_number=Z1234567" -H "Authorization: Bearer $VERIFIER"
+
+# submit a screening (verifier token)
+curl -s -XPOST localhost:8080/api/screenings -H "Authorization: Bearer $VERIFIER" \
   -F document=@../Al-Based-Fake-Identity-Document-Screening-System/sample/passport/download.jpg \
   -F doc_type=passport -F doc_number=Z1234567 -F checkpoint_id=CP-1
 
-curl -s localhost:8080/api/screenings -H "Authorization: Bearer $SUPERVISOR"
+curl -s localhost:8080/api/screenings -H "Authorization: Bearer $VERIFIER"
 ```
 
 ## Local development (no Docker)
@@ -72,7 +81,7 @@ cmd/api/            process entrypoint + lifecycle
 internal/config     env → Config
 internal/database   Mongo connect + EnsureIndexes
 internal/apperr     AppError + ERRORS catalog
-internal/model      User, Screening, AuditLog
+internal/model      User, Screening, BlacklistEntry, AuditLog
 internal/repository Mongo data access (interfaces + impls)
 internal/service    business logic (auth, users, screening orchestration)
 internal/screening  external FastAPI model client (http + mock)

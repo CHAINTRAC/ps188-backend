@@ -106,15 +106,15 @@ func TestScreeningService_Decide_OncePerScreening(t *testing.T) {
 		t.Fatalf("submit: %v", err)
 	}
 
-	decided, err := svc.Decide(ctx, view.ID, "officer-1", "127.0.0.1", model.DecisionDetain, "MRZ mismatch")
+	decided, err := svc.Decide(ctx, view.ID, "officer-1", "127.0.0.1", model.DecisionReject, "MRZ mismatch")
 	if err != nil {
 		t.Fatalf("decide: %v", err)
 	}
-	if decided.OfficerDecision == nil || decided.OfficerDecision.Decision != model.DecisionDetain {
+	if decided.OfficerDecision == nil || decided.OfficerDecision.Decision != model.DecisionReject {
 		t.Fatalf("decision not embedded: %+v", decided.OfficerDecision)
 	}
 
-	_, err = svc.Decide(ctx, view.ID, "officer-2", "127.0.0.1", model.DecisionClear, "override")
+	_, err = svc.Decide(ctx, view.ID, "officer-2", "127.0.0.1", model.DecisionAccept, "override")
 	if ae := apperr.From(err); ae == nil || ae.Code != apperr.ERRORS.AlreadyDecided.Code {
 		t.Fatalf("want AlreadyDecided, got %v", err)
 	}

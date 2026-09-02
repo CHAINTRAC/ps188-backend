@@ -25,7 +25,7 @@ func TestAuthService_Login(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("s3cret-password"), bcrypt.MinCost)
 	if _, err := users.Create(ctx, &model.User{
 		Username: "officer.jane", FullName: "Jane", Email: "jane@ps188.local",
-		PasswordHash: string(hash), Role: model.RoleSupervisor, Status: model.UserActive,
+		PasswordHash: string(hash), Role: model.RoleVerifier, Status: model.UserActive,
 	}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestAuthService_Refresh(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pw12345678"), bcrypt.MinCost)
 	u, err := users.Create(ctx, &model.User{
 		Username: "sup.bob", FullName: "Bob", Email: "bob@ps188.local",
-		PasswordHash: string(hash), Role: model.RoleSupervisor, Status: model.UserActive,
+		PasswordHash: string(hash), Role: model.RoleVerifier, Status: model.UserActive,
 	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)

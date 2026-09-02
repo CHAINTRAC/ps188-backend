@@ -281,7 +281,7 @@ Repositories return `response.Page[V]`; handlers pass it straight to `response.P
 const CollUsers = "users"
 
 type Role string
-const ( RoleSupervisor Role = "supervisor"; RoleAdmin Role = "admin" )
+const ( RoleVerifier Role = "verifier"; RoleAdmin Role = "admin"; RoleSuperAdmin Role = "superadmin" )
 func (r Role) Valid() bool { /* switch */ }
 
 type User struct {

@@ -17,13 +17,14 @@ Companion: `backend-architecture.md` (modules, endpoints, lifecycle),
 
 | Collection | Purpose | Written by |
 |---|---|---|
-| `users` | Supervisor / admin accounts | `UserRepository` |
+| `users` | verifier / admin / superadmin accounts | `UserRepository` |
 | `screenings` | One document-screening case + engine result + officer decision | `ScreeningRepository` |
+| `blacklist` | Blacklisted document numbers and identities | `BlacklistRepository` |
 | `audit_logs` | Append-only trail of every state-changing action | `AuditRepository` (Insert only) |
 | `counters` | Atomic per-day sequence for `screenings.reference_no` | `ScreeningRepository.NextSequence` |
 | `fs.files` / `fs.chunks` | GridFS — stored document images | `storage.gridFSStore` |
 
-Planned (see `backend-architecture.md` §8): `checkpoints`, `watchlist`, `cases`,
+Planned (see `backend-architecture.md` §8): `checkpoints`, `cases`,
 `face_verifications` (or embedded), `internal_notifications`.
 
 ---
@@ -37,19 +38,21 @@ Planned (see `backend-architecture.md` §8): `checkpoints`, `watchlist`, `cases`
   "full_name":     "Jane Doe",
   "email":         "jane@ps188.local",      // unique, lowercased
   "password_hash": "$2a$12$...",            // bcrypt cost 12 — never returned by any API
-  "role":          "supervisor",            // supervisor | admin
+  "role":          "verifier",              // verifier | admin | superadmin
   "status":        "active",                // active | disabled
   "created_at":    ISODate,
   "updated_at":    ISODate
 }
 ```
 
-- Two roles only: `supervisor` (works the checkpoint — submits screenings, records
-  decisions) and `admin` (manages accounts). The `officer_*` field names on
-  `screenings` refer to the acting `supervisor` — "officer" is the job, not a role.
+- Three roles: `verifier` (works the checkpoint — submits screenings, records
+  decisions), `admin` (manages verifier accounts + the blacklist), `superadmin`
+  (manages admins and everything an admin can, org-wide). Admin-level routes accept
+  both `admin` and `superadmin`. The `officer_*` field names on `screenings` refer to
+  the acting `verifier` — "officer" is the job, not a role.
 - `UserView` (API) drops `password_hash` and `updated_at`.
-- First boot seeds one `admin` (`ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_EMAIL`)
-  **only while the collection is empty**. Change the password immediately.
+- First boot seeds one `superadmin` (`ADMIN_USERNAME` / `ADMIN_PASSWORD` /
+  `ADMIN_EMAIL`) **only while the collection is empty**. Change the password immediately.
 - Disable, don't delete (`status: "disabled"`) — `audit_logs` and `screenings` reference
   `user_id` values by hex string.
 
@@ -93,7 +96,7 @@ Planned (see `backend-architecture.md` §8): `checkpoints`, `watchlist`, `cases`
   },
 
   "officer_decision": {                     // absent until an officer decides; then written once
-    "decision":   "refer",                  // clear | refer | detain
+    "decision":   "escalate",               // accept | escalate | reject
     "reason":     "MRZ mismatch, sent to secondary inspection",
     "decided_by": "66d4...",                // users._id hex
     "decided_at": ISODate
@@ -113,7 +116,7 @@ Planned (see `backend-architecture.md` §8): `checkpoints`, `watchlist`, `cases`
 - **`verdict: "PENDING"`** while `status` is `processing` or `failed` — the document
   always has a `verdict` field, so list filters never have to special-case its absence.
 - **Engine failure is a persisted state, not a lost request.** `status: "failed"` +
-  `failure_reason` — the officer still has the image and can `detain`/`refer`.
+  `failure_reason` — the officer still has the image and can `reject`/`escalate`.
 - **`officer_decision` embedded, written once.** One decision per screening, so a
   sub-document (not a separate collection). Enforced by a conditional update:
   `{ _id, officer_decision: { $exists: false } }`. A losing concurrent writer matches
@@ -136,17 +139,55 @@ List pagination uses the implicit `_id` order (`{_id: -1}`, `_id < cursor`).
 
 ---
 
-## 4. `audit_logs`
+## 4. `blacklist`
+
+```jsonc
+{
+  "_id":         ObjectId,
+  "kind":        "document",                // document | identity
+  "doc_number":  "Z1234567",                // kind == document — upper-cased, trimmed
+  "name":        "JOHN DOE",                // kind == identity  — upper-cased, trimmed
+  "dob":         "1985-01-01",              // kind == identity, optional — ISO date
+  "nationality": "IND",                     // kind == identity, optional — ISO-3, upper-cased
+  "reason":      "reported stolen — Interpol SLTD",
+  "source":      "Interpol SLTD",           // optional free text
+  "added_by":    "66d4...",                 // users._id hex
+  "active":      true,
+  "created_at":  ISODate,
+  "updated_at":  ISODate
+}
+```
+
+- Covers the PS lines "expired or blacklisted travel documents" and "multiple
+  identities used by the same person". Admin- and superadmin-managed.
+- **Two match kinds.** `document` matches a single document number; `identity`
+  matches a person by name, optionally narrowed by date of birth and nationality.
+  A blank stored `dob` / `nationality` on an identity entry still matches (name-only
+  blacklisting).
+- Lookups normalise the probe (upper-case + trim) so matching is case- and
+  whitespace-insensitive. `BlacklistService.Check` returns every active match; it
+  **never blocks** — the officer still decides.
+- **Never hard-deleted.** `POST /api/blacklist/:id/deactivate` flips `active` to
+  `false` so the trail survives. Adding a second active entry that matches an existing
+  one returns `BLACKLIST_ENTRY_EXISTS` (70002).
+- Audit: `blacklist.added`, `blacklist.deactivated`.
+
+**Indexes:** `{doc_number: 1, active: 1}` · `{name: 1, dob: 1, nationality: 1, active: 1}`
+· `{kind: 1, active: 1}`.
+
+---
+
+## 5. `audit_logs`
 
 ```jsonc
 {
   "_id":            ObjectId,
   "user_id":        "66d4...",              // actor, users._id hex ("" for system actions)
-  "action":         "screening.decided",    // user.created | screening.submitted | screening.decided
-  "reference_type": "screening",            // screening | user
+  "action":         "screening.decided",    // user.created | screening.submitted | screening.decided | blacklist.added | blacklist.deactivated
+  "reference_type": "screening",            // screening | user | blacklist
   "reference_id":   "66d4...",
   "old_data":       { "verdict": "SUSPICIOUS", "risk_score": 0.42 },   // optional
-  "new_data":       { "decision": "refer", "reason": "..." },          // optional
+  "new_data":       { "decision": "escalate", "reason": "...", "detail": "screening.decided · ESCALATE" },  // optional
   "ip_address":     "10.12.4.9",
   "created_at":     ISODate
 }
@@ -162,7 +203,7 @@ List pagination uses the implicit `_id` order (`{_id: -1}`, `_id < cursor`).
 
 ---
 
-## 5. `counters` — gapless `reference_no`
+## 6. `counters` — gapless `reference_no`
 
 ```jsonc
 { "_id": "screening:20260901", "seq": 42 }
@@ -188,7 +229,7 @@ submissions never get the same one.
 
 ---
 
-## 6. GridFS — `fs.files` / `fs.chunks`
+## 7. GridFS — `fs.files` / `fs.chunks`
 
 Default bucket (`db.GridFSBucket()`), managed entirely by `internal/storage/gridfs.go`:
 
@@ -204,7 +245,7 @@ in `image_file_id`; `GET /api/screenings/:id/image` streams it back with a sniff
 
 ---
 
-## 7. Index Creation
+## 8. Index Creation
 
 All indexes are declared once, in `internal/database/mongo.go` → `EnsureIndexes`, and
 created on every boot (idempotent):
@@ -214,7 +255,7 @@ db.Collection(model.CollUsers).Indexes().CreateMany(ctx, []mongo.IndexModel{
     {Keys: bson.D{{Key: "username", Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_users_username")},
     {Keys: bson.D{{Key: "email",    Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_users_email")},
 })
-// ... screenings, audit_logs ...
+// ... screenings, blacklist, audit_logs ...
 ```
 
 Adding a collection or an access pattern = add its `mongo.IndexModel` here. The
@@ -222,11 +263,12 @@ Adding a collection or an access pattern = add its `mongo.IndexModel` here. The
 
 ---
 
-## 8. Relationships
+## 9. Relationships
 
 ```
 users (1) ────< screenings.officer_id            (hex string, not a DB ref)
 users (1) ────< screenings.officer_decision.decided_by
+users (1) ────< blacklist.added_by
 users (1) ────< audit_logs.user_id
 screenings (1) ──1 fs.files                       via image_file_id (GridFS)
 screenings (1) ──< audit_logs                     via reference_type="screening" + reference_id

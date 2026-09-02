@@ -28,6 +28,7 @@ type Deps struct {
 	Auth       *service.AuthService
 	Users      *service.UserService
 	Screenings *service.ScreeningService
+	Blacklist  *service.BlacklistService
 }
 
 // NewRouter builds the fully-wired gin.Engine.
@@ -50,10 +51,12 @@ func NewRouter(d Deps) *gin.Engine {
 	authH := &authHandler{auth: d.Auth}
 	userH := &userHandler{users: d.Users}
 	scrH := &screeningHandler{screenings: d.Screenings, maxUpload: d.Cfg.MaxUploadBytes}
+	blH := &blacklistHandler{blacklist: d.Blacklist}
 
 	authed := middleware.Authenticate(d.JWT)
-	admin := middleware.RequireRole(string(model.RoleAdmin))
-	supervisor := middleware.RequireRole(string(model.RoleSupervisor))
+	// admin-level routes are open to both admin and super admin.
+	admin := middleware.RequireRole(string(model.RoleAdmin), string(model.RoleSuperAdmin))
+	verifier := middleware.RequireRole(string(model.RoleVerifier))
 
 	api := r.Group("/api")
 	{
@@ -67,11 +70,18 @@ func NewRouter(d Deps) *gin.Engine {
 		users.GET("", admin, userH.list)
 
 		scr := api.Group("/screenings", authed)
-		scr.POST("", supervisor, scrH.submit)
+		scr.POST("", verifier, scrH.submit)
 		scr.GET("", scrH.list)
 		scr.GET("/:id", scrH.get)
 		scr.GET("/:id/image", scrH.image)
-		scr.POST("/:id/decision", supervisor, scrH.decide)
+		scr.POST("/:id/decision", verifier, scrH.decide)
+
+		bl := api.Group("/blacklist", authed)
+		bl.GET("/check", blH.check) // any authenticated user (verifier runs it at the checkpoint)
+		bl.POST("", admin, blH.create)
+		bl.GET("", admin, blH.list)
+		bl.GET("/:id", admin, blH.get)
+		bl.POST("/:id/deactivate", admin, blH.deactivate)
 	}
 	return r
 }

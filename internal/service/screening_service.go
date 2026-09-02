@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -205,9 +206,13 @@ func (s *ScreeningService) Decide(ctx context.Context, id, actorID, ip string, d
 		ReferenceType: "screening",
 		ReferenceID:   id,
 		OldData:       bson.M{"verdict": sc.Verdict, "risk_score": sc.Risk},
-		NewData:       bson.M{"decision": decision, "reason": reason},
-		IPAddress:     ip,
-		CreatedAt:     time.Now().UTC(),
+		NewData: bson.M{
+			"decision": decision,
+			"reason":   reason,
+			"detail":   model.ActionScreeningDecided + " · " + strings.ToUpper(string(decision)),
+		},
+		IPAddress: ip,
+		CreatedAt: time.Now().UTC(),
 	})
 	return updated.View(), nil
 }

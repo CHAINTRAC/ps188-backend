@@ -65,5 +65,14 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 	if _, err := db.Collection(model.CollAuditLogs).Indexes().CreateMany(ctx, audit); err != nil {
 		return fmt.Errorf("audit indexes: %w", err)
 	}
+
+	blacklist := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "doc_number", Value: 1}, {Key: "active", Value: 1}}, Options: options.Index().SetName("idx_blacklist_doc_number")},
+		{Keys: bson.D{{Key: "name", Value: 1}, {Key: "dob", Value: 1}, {Key: "nationality", Value: 1}, {Key: "active", Value: 1}}, Options: options.Index().SetName("idx_blacklist_identity")},
+		{Keys: bson.D{{Key: "kind", Value: 1}, {Key: "active", Value: 1}}, Options: options.Index().SetName("idx_blacklist_kind_active")},
+	}
+	if _, err := db.Collection(model.CollBlacklist).Indexes().CreateMany(ctx, blacklist); err != nil {
+		return fmt.Errorf("blacklist indexes: %w", err)
+	}
 	return nil
 }

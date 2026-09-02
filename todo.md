@@ -96,17 +96,17 @@
 ## Pending — not yet built
 
 ### Blacklisting  (PS: "expired or blacklisted travel documents", "multiple identities")
-- [ ] `blacklist` collection — blacklisted document numbers + identities (name/DOB/nationality), `reason`, `source`, `added_by`, `active`, timestamps; indexes on `doc_number` and identity fields
-- [ ] `model/blacklist.go` + `BlacklistRepository` (create, list/paginate, lookup by doc number, lookup by identity, deactivate)
-- [ ] `BlacklistService` — admin CRUD + a `Check(docNumber, fields)` used during screening submit
-- [ ] Wire into `ScreeningService.Submit` — on a hit: raise `blacklist_hit` flag on the screening, bump `risk_score`, add a reason; never auto-block (officer still decides)
+- [x] `blacklist` collection — blacklisted document numbers + identities (name/DOB/nationality), `reason`, `source`, `added_by`, `active`, timestamps; indexes on `doc_number`, identity fields, `kind`
+- [x] `model/blacklist.go` + `BlacklistRepository` (create, find, list/paginate+filters, lookup by doc number, lookup by identity, deactivate)
+- [x] `BlacklistService` — admin CRUD + deactivate + `Check(probe)` → `{hit, matches[]}` (dedupes doc + identity hits)
+- [x] Endpoints — `GET /api/blacklist/check` (any authed), `POST/GET /api/blacklist` + `GET /api/blacklist/:id` + `POST /api/blacklist/:id/deactivate` (admin + superadmin)
+- [x] Error domain `7xxxx` — `BLACKLIST_ENTRY_NOT_FOUND` 70001, `BLACKLIST_ENTRY_EXISTS` 70002, `INVALID_BLACKLIST_KIND` 70003, `BLACKLIST_FIELDS_MISSING` 70004
+- [x] Audit actions — `blacklist.added`, `blacklist.deactivated`
+- [x] Tests — repo (lookup by doc number / identity, case-insensitive, active-only, pagination), service (add → check hit, duplicate rejected, validation, identity check, deactivate clears hit)
+- [x] Docs — `backend-architecture.md` §4.4 full module section, `blacklist` collection added to `database-design.md`
+- [ ] Wire into `ScreeningService.Submit` — on a hit: raise `blacklist_hit` flag on the screening, bump `risk_score`, add a reason; never auto-block (officer still decides)  *(service method ready; needs the Submit call site + `flags[]`)*
 - [ ] Expiry check — flag documents whose extracted/entered expiry date is past (`expired_document` flag)
 - [ ] `screenings` doc: add `flags []string` (e.g. `blacklist_hit`, `expired_document`, `multiple_identity`) + `blacklist_matches []{...}`
-- [ ] Endpoints — `POST/GET/PATCH /api/blacklist` (admin), `GET /api/blacklist/check` (supervisor)
-- [ ] Error domain `7xxxx` — `BLACKLIST_ENTRY_NOT_FOUND`, `BLACKLIST_ENTRY_EXISTS`
-- [ ] Audit actions — `blacklist.added`, `blacklist.updated`, `blacklist.removed`
-- [ ] Tests — repo (lookup by doc number / identity), service (`Check` hit/miss), submit-flow integration (hit → flag + risk bump)
-- [ ] Docs — promote `backend-architecture.md` §8 "Blacklist" from sketch to a full module section; add the `blacklist` collection to `database-design.md`
 
 ### Other future modules (sketched in `backend-architecture.md` §8, not started)
 - [ ] Checkpoints registry (`/api/checkpoints`)
@@ -115,3 +115,203 @@
 - [ ] Audit read API (`GET /api/audit-logs`, admin)
 - [ ] Dashboard summary (`GET /api/dashboard/summary`)
 - [ ] Async screening (worker + `202 processing`) if the model gets slow
+
+---
+
+# Build plan — align backend to `ps188-UI-Design/`
+
+Gap analysis of the current backend against the finished UI design (React app in
+`ps188-UI-Design/`). Decisions taken 2026-09-02:
+
+- **3 roles + regions** — `verifier` / `admin` (region-scoped) / `superadmin` (org-wide).
+  This supersedes the "two roles only" note in the earlier checklist and in
+  `backend-architecture.md` §2.
+- **Decision vocabulary aligns to the UI** — `accept` / `escalate` / `reject`
+  (replaces `clear` / `refer` / `detain`). **Done** — see Phase B.
+
+Phases are ordered by dependency. A–C unblock everything; do them first.
+
+## Phase A — Role model, regions, checkpoints, auth  *(foundational)*
+- [x] `model/user.go` — `Role` enum → `RoleVerifier`, `RoleAdmin`, `RoleSuperAdmin`;
+      `Role.Valid()` + `Role.AtLeastAdmin()`. `RoleSupervisor` renamed everywhere.
+- [x] `middleware.RequireRole(admin, superadmin)` on account + blacklist routes;
+      `verifier` on screening submit/decision.
+- [x] `SeedAdmin` now seeds a `superadmin` (env keys unchanged: `ADMIN_*`).
+- [x] Docs + tests updated to the 3-role model.
+- [ ] `model/user.go` — regions: still TODO (see below)
+- [ ] `model/user.go` — add `Region string` (admin + verifier) and `CheckpointID string`
+      (verifier). `UserView` exposes both. Superadmin has empty region = all.
+- [ ] `CreateUserInput` — add `region` (required for admin), `checkpoint_id` (required
+      for verifier); validate `checkpoint_id`/`region` against the checkpoints registry.
+- [ ] `model/checkpoint.go` — `Checkpoint` { `code` (e.g. `CP-04`), `region`, `admin_id`,
+      `status` active|attention, timestamps }, `CheckpointView`.
+- [ ] `repository/checkpoint_repo.go` — create, list (filter by region), find by code,
+      update (assign admin / status). Unique index on `code`, index on `region`.
+- [ ] `service/checkpoint_service.go` — superadmin CRUD; `Resolve(code) → region` used by
+      screening submit and user create.
+- [ ] `transport/http` — `POST /api/checkpoints` (superadmin), `GET /api/checkpoints`
+      (admin = own region, superadmin = all), `PATCH /api/checkpoints/:code` (superadmin).
+      Audit `checkpoint.created` / `checkpoint.updated`.
+- [ ] `middleware/auth.go` — `RequireRole` for the 3 roles; add `Principal.Region` /
+      `Principal.CheckpointID`. Helper `ScopeToActor(c, filter)` that forces
+      `region=` for admin, `officer_id=` for verifier, no-op for superadmin.
+- [ ] `platform/jwt` — `TokenData` gains `Region` (and `CheckpointID`) so request
+      scoping needs no per-call user lookup. Re-issue on refresh.
+- [ ] Auth login by **email or username** — UI sign-in submits email. Accept an
+      `identifier` (or keep `username` field but match against both). Keep the
+      unknown-user / wrong-password indistinguishability.
+- [ ] `auth_service.Login` — write an `auth.login` audit entry on success (actor, IP,
+      region). New `ActionAuthLogin` constant.
+- [ ] `POST /api/users/change-password` — `{current_password, new_password}`, any authed
+      user, bcrypt-verify current. Audit `user.password_changed`. (UI: Profile → Change
+      Password.)
+- [ ] `POST /api/users/:id/reset-password` — admin resets a verifier in their region,
+      superadmin resets anyone. Returns nothing / a temp password. Audit
+      `user.password_reset`. (UI: admin audit log shows this action.)
+- [ ] `cmd/api/main.go` — seed a bootstrap **superadmin** (was admin). Update
+      `ADMIN_*` env names → `SUPERADMIN_*` (keep back-compat read).
+- [ ] Tests — role validity, region scoping on list queries, checkpoint CRUD,
+      email login, change/reset password, login audit.
+
+## Phase B — Decision vocabulary  *(done 2026-09-02)*
+- [x] `model/screening.go` — `Decision` enum → `DecisionAccept`, `DecisionEscalate`,
+      `DecisionReject`; `Decision.Valid()` updated.
+- [x] `service/screening_service.go` — `screening.decided` audit `new_data.detail` =
+      `screening.decided · ACCEPT|ESCALATE|REJECT`. Handler unchanged (validates via
+      `Decision.Valid()` → `INVALID_DECISION`).
+- [x] `apperr` — `INVALID_DECISION` message → "Decision must be one of accept, escalate, reject".
+- [x] `screening_service_test.go` + `screening_repo_test.go` decision cases updated.
+- [x] Docs — `backend-architecture.md` §4.3 / §5, `database-design.md` §3 / §5, BACKEND_GUIDE.
+
+## Phase C — Screening scoping, filters, denormalised region
+- [ ] `model/screening.go` — add `Region string` (denormalised from the officer's
+      checkpoint at submit time) and `Flags []string`. Index `region + created_at`.
+- [ ] `ScreeningFilter` — add `OfficerID`, `Region`, `Decided *bool` (undecided filter),
+      `DecisionValue`.
+- [ ] `screening_repo.List` — apply the new filters.
+- [ ] `screening_handler.list` — call `ScopeToActor`: verifier → own `officer_id`
+      (UI "My History"); admin → own `region`; superadmin → unscoped. Honour
+      `?decided=false`, `?verdict=`, `?doc_type=`.
+- [ ] "Flagged for review" (UI admin dashboard) = `verdict ∈ {FAKE,SUSPICIOUS}` AND
+      `officer_decision` unset AND region — served by the list endpoint with filters,
+      no new route.
+- [ ] `screening_service.Submit` — resolve officer → checkpoint → region, stamp
+      `region` on the doc.
+- [ ] Tests — verifier sees only own; admin sees only region; undecided filter.
+
+## Phase D — OCR fields, evidence tone, risk scale  *(coordinate with the FastAPI model)*
+- [ ] Per-field confidence — `EngineResult.ExtractedFields` becomes
+      `[]ExtractedField{ Label, Value, Confidence float64 }` (UI renders a confidence
+      badge per row). Update `predictResponse` parsing + `screening/engine.go` contract
+      + `backend-architecture.md` §6. Fallback: keep the raw `evidence_table` verbatim.
+- [ ] Evidence tone — add `[]EvidenceItem{ Tone: good|warn|bad, Text string }` to
+      `EngineResult`. Prefer the model to supply tone; if not, derive in `http_engine`
+      from `reasons` + `risk_score` bands. Keep `reasons []string` and raw `evidence`.
+- [ ] Risk score scale — model emits `0.0–1.0`; UI `RiskGauge` and history show `0–100`.
+      Store as-is, expose `risk_score` in `ScreeningView` as an int `0–100`. Document
+      the convention in one place.
+- [ ] `INSUFFICIENT_IMAGE_QUALITY` verdict — UI has no state for it; decide a UI
+      treatment (show as its own badge / map to SUSPICIOUS). Flag for frontend.
+- [ ] Tests — `http_engine_test.go` for the new response shape + tone passthrough.
+
+## Phase E — Dashboard & reports aggregation  *(all new endpoints)*
+- [ ] Define **"accuracy"** — the UI shows team/verifier/system accuracy %. Proposed:
+      share of decided screenings where `officer_decision` agrees with the engine
+      verdict band (accept↔GENUINE, escalate↔SUSPICIOUS, reject↔FAKE). Needs sign-off.
+- [ ] `GET /api/dashboard/summary` — role-aware payload:
+  - [ ] verifier — my screenings today, my verdict split, my pending decisions,
+        shift counters.
+  - [ ] admin — region: verifications today (+trend), team accuracy, avg decision
+        time, escalated count, weekly volume `[{day, genuine, suspicious, fake}]`,
+        verifier roster `[{name, checkpoint, online, today, accuracy}]`, flagged cases.
+  - [ ] superadmin — org: #checkpoints, #admins, #verifiers, screenings today,
+        system accuracy, checkpoints table, admins table `[{name, region, team, accuracy}]`.
+- [ ] `GET /api/reports` (admin, region) — doc-type breakdown `[{doc, count}]`,
+      by-checkpoint breakdown `[{checkpoint, verifiers, today}]`, fake-detection rate,
+      weekly volume, avg decision time, escalated cases.
+- [ ] Mongo aggregation pipelines + indexes (`region+created_at`, `officer_id+created_at`,
+      `verdict+created_at`, `officer_decision.decided_at`).
+- [ ] `service/analytics_service.go` — one place for all aggregations; cache the
+      heavier org rollups (short TTL) if slow.
+- [ ] Tests — seeded screenings → expected counts, region isolation, verdict split.
+
+## Phase F — Face verification (PS Module 4 — UI verifier dashboard card)
+- [ ] `internal/face` — `FaceEngine` interface (mirrors `screening.Engine`) +
+      `httpFaceEngine` (`POST {FACE_SERVICE_URL}/verify`, X-API-Key) + `MockFaceEngine`.
+- [ ] Config — `FACE_ENGINE` (http|mock), `FACE_SERVICE_URL`, `FACE_SERVICE_API_KEY`,
+      `FACE_SERVICE_TIMEOUT`, `FACE_MATCH_THRESHOLD` (default `0.85` — UI shows an 85% line).
+- [ ] `model/screening.go` — `FaceVerification { Score float64, Matched bool,
+      Threshold float64, CapturedImageFileID, VerifiedAt }`, pointer, embedded once.
+- [ ] `POST /api/screenings/:id/face` (verifier) — multipart `capture` (JPEG/PNG) →
+      GridFS → `FaceEngine.Verify(docPortrait, capture)` → persist `face_verification`.
+      Audit `screening.face_verified`.
+- [ ] `GET /api/screenings/:id/face-image` — stream the live capture.
+- [ ] Surface `face_verification` in `ScreeningView`; feed a low match into `flags`
+      (`face_mismatch`) and the risk narrative.
+- [ ] Tests — mock engine match/no-match, threshold boundary, image round-trip.
+
+## Phase G — Audit read API + expanded actions  (UI: admin AuditLog, superadmin AuditTrail)
+- [ ] `AuditRepository.Find(ctx, filter, cursor, limit)` — additive, repo stays
+      Insert-only otherwise (no update/delete).
+- [ ] `model/audit.go` — new action constants: `auth.login`, `user.role_changed`,
+      `user.updated`, `user.disabled`, `user.password_reset`, `user.password_changed`,
+      `checkpoint.created`, `checkpoint.updated`, `org.settings_updated`.
+- [ ] Denormalise `actor_name` + `region` onto each `AuditLog` at write time (UI lists
+      the actor's display name and a region/detail line without N+1 lookups).
+- [ ] `GET /api/audit-logs` — admin (own region) / superadmin (org). Filters
+      `?category=decision|user|login`, `?action=`, `?actor=`, `?reference_type=`,
+      `?reference_id=`. Cursor-paginated, newest first.
+- [ ] Wire the new audit writes into user update / role change / disable / checkpoint /
+      settings services.
+- [ ] Tests — filter by category, region isolation, append-only invariant.
+
+## Phase H — User management (UI: admin Verifiers, superadmin Admins)
+- [ ] `GET /api/users?role=&region=&status=` — admin auto-scoped to `role=verifier` +
+      own region; superadmin can list `role=admin` and filter by region.
+- [ ] `PATCH /api/users/:id` — update `checkpoint_id`, `region`, `status`
+      (enable/disable). Role change is **superadmin only**. Audit `user.updated` /
+      `user.role_changed` / `user.disabled`.
+- [ ] Verifier/admin detail drawer data — recent screenings (reuse
+      `GET /api/screenings?officer_id=`), today count + accuracy (from analytics),
+      `member since` (already `created_at` in `UserView`), checkpoints managed
+      (for an admin: `GET /api/checkpoints?admin_id=`).
+- [ ] `POST /api/users` — already exists; extend to take `region` / `checkpoint_id`
+      and enforce the creator's scope (admin can only create verifiers in own region).
+- [ ] Tests — scope enforcement on create/list/patch, disable blocks login (existing).
+
+## Phase I — Presence / online status  *(low priority — UI shows online/offline dots)*
+- [ ] `User.LastActiveAt` — bumped by a throttled touch in `Authenticate` (once/min) or
+      an explicit `POST /api/users/heartbeat` from the SPA.
+- [ ] "Online" = `last_active_at` within `PRESENCE_WINDOW` (default 5m). Checkpoint
+      "x/y online" derived in the analytics service.
+- [ ] Acceptable stopgap for the demo: derive from last successful login.
+
+## Phase J — Settings  *(UI: superadmin Settings — mostly policy, some static)*
+- [ ] `settings` collection, single doc — `security_policy { mfa_required,
+      password_rotation_days, session_timeout }`. `GET /api/settings` (admin+superadmin
+      read), `PUT /api/settings` (superadmin). Audit `org.settings_updated`.
+- [ ] Enforce `session_timeout` via `JWT_ACCESS_TTL` (or a claim check);
+      `password_rotation_days` checked at login (warn/force).
+- [ ] MFA — larger lift; mark out-of-scope for the hackathon unless asked. Toggle
+      persists but is not enforced yet.
+- [ ] Org-profile block (org / department / PS id / category) is static — a constant,
+      no endpoint.
+- [ ] Role-permissions matrix in the UI is static documentation — no endpoint.
+
+## Phase K — Contract alignment & frontend wiring
+- [ ] `CORS_ALLOW_ORIGINS` — add the Vite dev origin (`http://localhost:5173`).
+- [ ] Reference number — backend `SCR-<yyyymmdd>-<00001>` stays; UI mock uses
+      `SC-88291`. Frontend adopts the real format (no backend change).
+- [ ] `ScreeningView` final review against UI field expectations — `risk_score` 0–100,
+      lowercase `doc_type`, `image_url`, `reference_no`, `verdict`, `officer_decision`,
+      `face_verification`, `extracted_fields[]`, `evidence[]`.
+- [ ] Frontend — replace `src/data/*.js` mock modules with an API client; wire
+      `SignIn` → `POST /api/auth/login`; token storage + silent refresh; route guards
+      keyed off `user.role`; `HeaderShell` role from the token, not `ROLES` constant.
+
+## Verification (repeat from the base checklist)
+- [ ] `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./...` green on real Mongo
+- [ ] `docs/backend/*.md` + `README.md` updated — 3-role table, region model, new
+      endpoints, decision enum, error domains (add `7xxxx` checkpoints, `8xxxx` face)
+- [ ] `.env.example` — new `FACE_*`, `SUPERADMIN_*`, `PRESENCE_WINDOW` keys
+- [ ] Update memory `ps188-backend-stack.md` — 3 roles + regions, decision enum change

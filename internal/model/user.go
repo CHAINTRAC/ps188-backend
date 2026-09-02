@@ -9,21 +9,30 @@ import (
 // CollUsers is the MongoDB collection name for users.
 const CollUsers = "users"
 
-// Role is a user's access level. Supervisors work the checkpoint — they submit
-// screenings and record decisions; admins manage user accounts.
+// Role is a user's access level. Verifiers work the checkpoint — they submit
+// screenings and record decisions. Admins manage verifier accounts and the
+// blacklist for their region. Super admins manage admins and everything an
+// admin can, org-wide. Role names match the operator-facing UI.
 type Role string
 
 const (
-	RoleSupervisor Role = "supervisor"
+	RoleVerifier   Role = "verifier"
 	RoleAdmin      Role = "admin"
+	RoleSuperAdmin Role = "superadmin"
 )
 
 func (r Role) Valid() bool {
 	switch r {
-	case RoleSupervisor, RoleAdmin:
+	case RoleVerifier, RoleAdmin, RoleSuperAdmin:
 		return true
 	}
 	return false
+}
+
+// AtLeastAdmin reports whether the role carries admin privileges (admin or
+// super admin). Used to gate account- and blacklist-management routes.
+func (r Role) AtLeastAdmin() bool {
+	return r == RoleAdmin || r == RoleSuperAdmin
 }
 
 // UserStatus controls whether the account may authenticate.

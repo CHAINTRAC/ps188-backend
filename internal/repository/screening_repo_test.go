@@ -97,7 +97,7 @@ func TestScreeningRepository_SetDecision_SingleWriter(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	id := created.ID.Hex()
-	dec := model.OfficerDecision{Decision: model.DecisionClear, Reason: "ok", DecidedBy: "officer-1"}
+	dec := model.OfficerDecision{Decision: model.DecisionAccept, Reason: "ok", DecidedBy: "officer-1"}
 
 	if _, err := repo.SetDecision(ctx, id, dec); err != nil {
 		t.Fatalf("first decision: %v", err)
