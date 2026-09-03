@@ -28,12 +28,14 @@ type Config struct {
 	MaxUploadBytes   int64
 	RateLimitPerMin  int
 
-	// First-run bootstrap admin (seeded only when the users collection is empty).
-	AdminUsername string
-	AdminPassword string
-	AdminEmail    string
+	// First-run bootstrap super admin (seeded only when the users collection is
+	// empty). Reads SUPERADMIN_* and falls back to the legacy ADMIN_* names.
+	SuperAdminUsername string
+	SuperAdminPassword string
+	SuperAdminEmail    string
 
-	// External Python/FastAPI screening model.
+	// External Python/FastAPI screening model (passport-model/server.py).
+	// Defaults point at the hosted deployment: https://passport-model.onrender.com
 	ScreeningEngine     string // http | mock
 	ScreeningServiceURL string
 	ScreeningAPIKey     string
@@ -63,14 +65,14 @@ func Load() (*Config, error) {
 		MaxUploadBytes:   getint64("MAX_UPLOAD_BYTES", 10<<20), // 10 MiB
 		RateLimitPerMin:  int(getint64("RATE_LIMIT_PER_MIN", 300)),
 
-		AdminUsername: getenv("ADMIN_USERNAME", "admin"),
-		AdminPassword: getenv("ADMIN_PASSWORD", "admin12345"),
-		AdminEmail:    getenv("ADMIN_EMAIL", "admin@ps188.local"),
+		SuperAdminUsername: getenv("SUPERADMIN_USERNAME", getenv("ADMIN_USERNAME", "admin")),
+		SuperAdminPassword: getenv("SUPERADMIN_PASSWORD", getenv("ADMIN_PASSWORD", "admin12345")),
+		SuperAdminEmail:    getenv("SUPERADMIN_EMAIL", getenv("ADMIN_EMAIL", "admin@ps188.local")),
 
 		ScreeningEngine:     getenv("SCREENING_ENGINE", "http"),
-		ScreeningServiceURL: os.Getenv("SCREENING_SERVICE_URL"),
-		ScreeningAPIKey:     os.Getenv("SCREENING_SERVICE_API_KEY"),
-		ScreeningTimeout:    getdur("SCREENING_SERVICE_TIMEOUT", 30*time.Second),
+		ScreeningServiceURL: getenv("SCREENING_SERVICE_URL", "https://passport-model.onrender.com"),
+		ScreeningAPIKey:     getenv("SCREENING_SERVICE_API_KEY", "midv2020-secret-api-key-2026"),
+		ScreeningTimeout:    getdur("SCREENING_SERVICE_TIMEOUT", 60*time.Second),
 	}
 
 	if c.JWTSecret == "" {

@@ -12,10 +12,15 @@ const CollAuditLogs = "audit_logs"
 // Audit action constants — one per state-changing operation.
 const (
 	ActionUserCreated          = "user.created"
+	ActionUserPasswordChanged  = "user.password_changed"
+	ActionUserPasswordReset    = "user.password_reset"
+	ActionAuthLogin            = "auth.login"
 	ActionScreeningSubmitted   = "screening.submitted"
 	ActionScreeningDecided     = "screening.decided"
 	ActionBlacklistAdded       = "blacklist.added"
 	ActionBlacklistDeactivated = "blacklist.deactivated"
+	ActionCheckpointCreated    = "checkpoint.created"
+	ActionCheckpointUpdated    = "checkpoint.updated"
 )
 
 // AuditLog is written on every state-changing operation and never updated or

@@ -87,6 +87,59 @@ func TestScreeningRepository_ListPagination(t *testing.T) {
 	}
 }
 
+func TestScreeningRepository_ListFilters(t *testing.T) {
+	db := testsupport.RequireMongo(t)
+	repo := repository.NewScreeningRepository(db)
+	ctx := context.Background()
+
+	mk := func(ref, officer, region string, decided bool, decision model.Decision) {
+		s := newScreening(ref)
+		s.OfficerID = officer
+		s.Region = region
+		s.Status = model.StatusCompleted
+		if decided {
+			s.OfficerDecision = &model.OfficerDecision{Decision: decision, Reason: "x", DecidedBy: officer}
+		}
+		if _, err := repo.Create(ctx, s); err != nil {
+			t.Fatalf("seed %s: %v", ref, err)
+		}
+	}
+	mk("SCR-F1", "off-A", "north", false, "")
+	mk("SCR-F2", "off-A", "north", true, model.DecisionAccept)
+	mk("SCR-F3", "off-B", "south", true, model.DecisionReject)
+	mk("SCR-F4", "off-B", "north", false, "")
+
+	count := func(f model.ScreeningFilter) int {
+		page, err := repo.List(ctx, f, "", 100)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		return len(page.Data)
+	}
+
+	if n := count(model.ScreeningFilter{OfficerID: "off-A"}); n != 2 {
+		t.Fatalf("officer filter = %d, want 2", n)
+	}
+	if n := count(model.ScreeningFilter{Region: "north"}); n != 3 {
+		t.Fatalf("region filter = %d, want 3", n)
+	}
+	no := false
+	if n := count(model.ScreeningFilter{Decided: &no}); n != 2 {
+		t.Fatalf("undecided filter = %d, want 2", n)
+	}
+	yes := true
+	if n := count(model.ScreeningFilter{Decided: &yes, Region: "north"}); n != 1 {
+		t.Fatalf("decided+region filter = %d, want 1", n)
+	}
+	if n := count(model.ScreeningFilter{DecisionValue: model.DecisionReject}); n != 1 {
+		t.Fatalf("decision-value filter = %d, want 1", n)
+	}
+	// "Flagged for review": suspicious/fake + undecided + region — via filters, no new route.
+	if n := count(model.ScreeningFilter{Region: "north", Decided: &no}); n != 2 {
+		t.Fatalf("flagged-for-review shape = %d, want 2", n)
+	}
+}
+
 func TestScreeningRepository_SetDecision_SingleWriter(t *testing.T) {
 	db := testsupport.RequireMongo(t)
 	repo := repository.NewScreeningRepository(db)

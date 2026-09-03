@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/sih26/ps188-backend/internal/apperr"
@@ -24,17 +26,20 @@ type LoginResult struct {
 // AuthService handles credential verification and token issuance.
 type AuthService struct {
 	users repository.UserRepository
+	audit repository.AuditRepository
 	jwt   *jwt.Manager
 }
 
-func NewAuthService(users repository.UserRepository, jwtMgr *jwt.Manager) *AuthService {
-	return &AuthService{users: users, jwt: jwtMgr}
+func NewAuthService(users repository.UserRepository, audit repository.AuditRepository, jwtMgr *jwt.Manager) *AuthService {
+	return &AuthService{users: users, audit: audit, jwt: jwtMgr}
 }
 
-func (s *AuthService) Login(ctx context.Context, username, password string) (*LoginResult, error) {
-	u, err := s.users.FindByUsername(ctx, username)
+// Login verifies credentials against a username or email and issues a token
+// pair. On success it writes an auth.login audit entry.
+func (s *AuthService) Login(ctx context.Context, identifier, password, ip string) (*LoginResult, error) {
+	u, err := s.users.FindByIdentifier(ctx, identifier)
 	if err != nil {
-		// Never reveal whether the username exists.
+		// Never reveal whether the account exists.
 		if ae := apperr.From(err); ae.Code == apperr.ERRORS.UserNotFound.Code {
 			return nil, apperr.ERRORS.InvalidCredentials
 		}
@@ -47,7 +52,7 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*Lo
 		return nil, apperr.ERRORS.UserDisabled
 	}
 
-	td := jwt.TokenData{UserID: u.ID.Hex(), Username: u.Username, Role: string(u.Role)}
+	td := tokenDataFor(u)
 	access, err := s.jwt.CreateAccessToken(td)
 	if err != nil {
 		return nil, apperr.ERRORS.UnhandledError.Wrap(err)
@@ -56,11 +61,23 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*Lo
 	if err != nil {
 		return nil, apperr.ERRORS.UnhandledError.Wrap(err)
 	}
+
+	_ = s.audit.Insert(ctx, model.AuditLog{
+		UserID:        u.ID.Hex(),
+		Action:        model.ActionAuthLogin,
+		ReferenceType: "user",
+		ReferenceID:   u.ID.Hex(),
+		NewData:       bson.M{"username": u.Username, "role": u.Role, "region": u.Region},
+		IPAddress:     ip,
+		CreatedAt:     time.Now().UTC(),
+	})
+
 	return &LoginResult{User: u.View(), Access: access, Refresh: refresh}, nil
 }
 
 // Refresh mints a new access token from a valid refresh token, re-checking that
-// the account still exists and is active.
+// the account still exists and is active. Region/checkpoint claims are re-issued
+// from the current user record.
 func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string, error) {
 	td, aerr := s.jwt.DecodeRefreshToken(refreshToken)
 	if aerr != nil {
@@ -73,11 +90,19 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string,
 	if u.Status != model.UserActive {
 		return "", apperr.ERRORS.UserDisabled
 	}
-	access, err := s.jwt.CreateAccessToken(jwt.TokenData{
-		UserID: u.ID.Hex(), Username: u.Username, Role: string(u.Role),
-	})
+	access, err := s.jwt.CreateAccessToken(tokenDataFor(u))
 	if err != nil {
 		return "", apperr.ERRORS.UnhandledError.Wrap(err)
 	}
 	return access, nil
+}
+
+func tokenDataFor(u *model.User) jwt.TokenData {
+	return jwt.TokenData{
+		UserID:       u.ID.Hex(),
+		Username:     u.Username,
+		Role:         string(u.Role),
+		Region:       u.Region,
+		CheckpointID: u.CheckpointID,
+	}
 }

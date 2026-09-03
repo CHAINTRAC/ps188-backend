@@ -14,9 +14,11 @@ import (
 // TokenData is what an access/refresh token carries and what request handlers
 // read back as the current principal.
 type TokenData struct {
-	UserID   string `json:"uid"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	UserID       string `json:"uid"`
+	Username     string `json:"username"`
+	Role         string `json:"role"`
+	Region       string `json:"region,omitempty"`
+	CheckpointID string `json:"cp,omitempty"`
 }
 
 // Manager issues and verifies both token kinds. Construct once, inject everywhere.

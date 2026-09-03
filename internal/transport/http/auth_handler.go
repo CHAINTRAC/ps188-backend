@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/sih26/ps188-backend/internal/apperr"
 	"github.com/sih26/ps188-backend/internal/middleware"
 	"github.com/sih26/ps188-backend/internal/response"
 	"github.com/sih26/ps188-backend/internal/service"
@@ -15,9 +16,24 @@ type authHandler struct {
 	auth *service.AuthService
 }
 
+// loginBody accepts any one of identifier / email / username — the UI sign-in
+// form submits an email, older clients submit username.
 type loginBody struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Identifier string `json:"identifier" binding:"omitempty"`
+	Email      string `json:"email" binding:"omitempty"`
+	Username   string `json:"username" binding:"omitempty"`
+	Password   string `json:"password" binding:"required"`
+}
+
+func (b loginBody) resolveIdentifier() string {
+	switch {
+	case b.Identifier != "":
+		return b.Identifier
+	case b.Email != "":
+		return b.Email
+	default:
+		return b.Username
+	}
 }
 
 type refreshBody struct {
@@ -30,7 +46,12 @@ func (h *authHandler) login(c *gin.Context) {
 		middleware.Fail(c, err)
 		return
 	}
-	res, err := h.auth.Login(c.Request.Context(), body.Username, body.Password)
+	identifier := body.resolveIdentifier()
+	if identifier == "" {
+		middleware.Fail(c, apperr.ERRORS.InvalidCredentials)
+		return
+	}
+	res, err := h.auth.Login(c.Request.Context(), identifier, body.Password, c.ClientIP())
 	if err != nil {
 		middleware.Fail(c, err)
 		return

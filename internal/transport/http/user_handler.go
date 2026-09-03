@@ -50,3 +50,32 @@ func (h *userHandler) profile(c *gin.Context) {
 	}
 	response.Success(c, nethttp.StatusOK, view, "Profile")
 }
+
+type changePasswordBody struct {
+	CurrentPassword string `json:"current_password" binding:"required"`
+	NewPassword     string `json:"new_password" binding:"required,min=8,max=128"`
+}
+
+func (h *userHandler) changePassword(c *gin.Context) {
+	var body changePasswordBody
+	if err := validate.BindJSON(c, &body); err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	p, _ := middleware.Principal(c)
+	if err := h.users.ChangePassword(c.Request.Context(), p.UserID, c.ClientIP(), body.CurrentPassword, body.NewPassword); err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	response.Success(c, nethttp.StatusOK, gin.H{"changed": true}, "Password changed")
+}
+
+func (h *userHandler) resetPassword(c *gin.Context) {
+	actor, _ := middleware.Principal(c)
+	temp, err := h.users.ResetPassword(c.Request.Context(), actor, c.ClientIP(), c.Param("id"))
+	if err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	response.Success(c, nethttp.StatusOK, gin.H{"temp_password": temp}, "Password reset")
+}

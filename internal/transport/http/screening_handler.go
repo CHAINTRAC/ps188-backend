@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	nethttp "net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -53,10 +54,17 @@ func (h *screeningHandler) submit(c *gin.Context) {
 	}
 
 	actor, _ := middleware.Principal(c)
+	// The verifier's checkpoint and region come from the token (stamped at
+	// account creation), not the request — the officer works one checkpoint.
+	checkpointID := actor.CheckpointID
+	if checkpointID == "" {
+		checkpointID = c.PostForm("checkpoint_id")
+	}
 	view, err := h.screenings.Submit(c.Request.Context(), service.SubmitInput{
 		OfficerID:    actor.UserID,
 		IP:           c.ClientIP(),
-		CheckpointID: c.PostForm("checkpoint_id"),
+		CheckpointID: checkpointID,
+		Region:       actor.Region,
 		DocType:      model.DocType(c.PostForm("doc_type")),
 		DocNumber:    c.PostForm("doc_number"),
 		MRZLine1:     c.PostForm("mrz_line1"),
@@ -74,11 +82,21 @@ func (h *screeningHandler) submit(c *gin.Context) {
 func (h *screeningHandler) list(c *gin.Context) {
 	cursor, limit := pageParams(c)
 	filter := model.ScreeningFilter{
-		Verdict:      model.Verdict(c.Query("verdict")),
-		DocType:      model.DocType(c.Query("doc_type")),
-		Status:       model.ScreeningStatus(c.Query("status")),
-		CheckpointID: c.Query("checkpoint_id"),
+		Verdict:       model.Verdict(c.Query("verdict")),
+		DocType:       model.DocType(c.Query("doc_type")),
+		Status:        model.ScreeningStatus(c.Query("status")),
+		CheckpointID:  c.Query("checkpoint_id"),
+		DecisionValue: model.Decision(c.Query("decision")),
 	}
+	if v := c.Query("decided"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			filter.Decided = &b
+		}
+	}
+	// Region/officer scoping is derived from the principal, not the client:
+	// verifier → own history, admin → own region, super admin → unscoped.
+	middleware.ScopeToActor(c, &filter)
+
 	page, err := h.screenings.List(c.Request.Context(), filter, cursor, limit)
 	if err != nil {
 		middleware.Fail(c, err)

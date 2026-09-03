@@ -63,6 +63,28 @@ func TestScreeningService_Submit_Completed(t *testing.T) {
 	}
 }
 
+func TestScreeningService_Submit_StampsRegion(t *testing.T) {
+	svc := newScreeningSvc(t, &screening.MockEngine{Force: model.VerdictGenuine})
+	in := submitInput()
+	in.Region = "north"
+
+	view, err := svc.Submit(context.Background(), in)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if view.Region != "north" {
+		t.Fatalf("region = %q, want north", view.Region)
+	}
+
+	got, err := svc.List(context.Background(), model.ScreeningFilter{Region: "north"}, "", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got.Data) != 1 || got.Data[0].ID != view.ID {
+		t.Fatalf("region list = %+v", got.Data)
+	}
+}
+
 func TestScreeningService_Submit_EngineDown_PersistsFailed(t *testing.T) {
 	svc := newScreeningSvc(t, &screening.MockEngine{
 		Err: apperr.ERRORS.ScreeningEngineUnavailable,

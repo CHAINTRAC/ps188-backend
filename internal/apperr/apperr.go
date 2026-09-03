@@ -66,6 +66,7 @@ func def(msg string, code, status int) *AppError {
 //	5xxxx  files / storage
 //	6xxxx  external screening engine
 //	7xxxx  blacklist
+//	8xxxx  checkpoints
 //
 // Add every new error here as a named field — reference it, never build one inline.
 var ERRORS = struct {
@@ -92,10 +93,12 @@ var ERRORS = struct {
 	UserDisabled        *AppError
 
 	// users (3xxxx)
-	UserNotFound  *AppError
-	UsernameTaken *AppError
-	EmailTaken    *AppError
-	InvalidRole   *AppError
+	UserNotFound           *AppError
+	UsernameTaken          *AppError
+	EmailTaken             *AppError
+	InvalidRole            *AppError
+	InvalidCurrentPassword *AppError
+	MissingScopeField      *AppError
 
 	// screenings (4xxxx)
 	ScreeningNotFound     *AppError
@@ -119,6 +122,12 @@ var ERRORS = struct {
 	BlacklistEntryExists   *AppError
 	InvalidBlacklistKind   *AppError
 	BlacklistFieldsMissing *AppError
+
+	// checkpoints (8xxxx)
+	CheckpointNotFound      *AppError
+	CheckpointExists        *AppError
+	InvalidCheckpointStatus *AppError
+	UnknownRegion           *AppError
 }{
 	DatabaseError:      def("Database operation failed", 10001, 500),
 	InvalidRequestBody: def("Invalid request body", 10002, 400),
@@ -140,10 +149,12 @@ var ERRORS = struct {
 	InvalidCredentials:  def("Invalid username or password", 20007, 401),
 	UserDisabled:        def("This account is disabled", 20008, 403),
 
-	UserNotFound:  def("User not found", 30001, 404),
-	UsernameTaken: def("That username is already taken", 30002, 409),
-	EmailTaken:    def("That email is already registered", 30003, 409),
-	InvalidRole:   def("Unknown role", 30004, 422),
+	UserNotFound:           def("User not found", 30001, 404),
+	UsernameTaken:          def("That username is already taken", 30002, 409),
+	EmailTaken:             def("That email is already registered", 30003, 409),
+	InvalidRole:            def("Unknown role", 30004, 422),
+	InvalidCurrentPassword: def("Current password is incorrect", 30005, 401),
+	MissingScopeField:      def("This role requires a region (admin) or checkpoint (verifier)", 30006, 422),
 
 	ScreeningNotFound:     def("Screening not found", 40001, 404),
 	AlreadyDecided:        def("This screening already has an officer decision", 40002, 409),
@@ -163,4 +174,9 @@ var ERRORS = struct {
 	BlacklistEntryExists:   def("An active blacklist entry already matches this", 70002, 409),
 	InvalidBlacklistKind:   def("Blacklist kind must be one of document, identity", 70003, 422),
 	BlacklistFieldsMissing: def("Missing required fields for this blacklist kind", 70004, 422),
+
+	CheckpointNotFound:      def("Checkpoint not found", 80001, 404),
+	CheckpointExists:        def("A checkpoint with that code already exists", 80002, 409),
+	InvalidCheckpointStatus: def("Checkpoint status must be one of active, attention", 80003, 422),
+	UnknownRegion:           def("No checkpoint is registered in that region", 80004, 422),
 }

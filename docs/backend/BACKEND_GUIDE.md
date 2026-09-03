@@ -65,7 +65,7 @@ internal/
 │   └── screening_service.go     # store image → call engine → persist → decide
 ├── screening/                   # THE external service boundary
 │   ├── engine.go                # Engine interface + ScreenRequest / ScreenResult
-│   ├── http_engine.go           # real: POST {SCREENING_SERVICE_URL}/predict
+│   ├── http_engine.go           # real: POST {SCREENING_SERVICE_URL}/api/v1/verify
 │   └── mock_engine.go           # deterministic offline stub (SCREENING_ENGINE=mock)
 ├── storage/
 │   ├── storage.go               # FileStore interface (Put/Get/Delete)
@@ -468,12 +468,13 @@ type Engine interface {
 }
 ```
 
-- **`http_engine.go`** — the real client. `POST {baseURL}/predict` as
-  `multipart/form-data` (`image`, `doc_type`, `doc_number`, `mrz_line1`, `mrz_line2`),
-  header `X-API-Key`. Response JSON: `{verdict, risk_score, reasons[], evidence_table{},
-  extracted_fields{}}` — the shape produced by
-  `Al-Based-Fake-Identity-Document-Screening-System/predict_pipeline.py`.
-  Any transport error / non-200 / timeout → `ERRORS.ScreeningEngineUnavailable.Wrap(...)`.
+- **`http_engine.go`** — the real client. `POST {baseURL}/api/v1/verify` as
+  `multipart/form-data` (`image`, `doc_type` ∈ `auto|passport|aadhaar`, `doc_number`,
+  `mrz_line1`, `mrz_line2`), header `X-API-Key`. Response JSON: `{success, filename,
+  doc_type, verdict, risk_score, reasons[], evidence_table{}}` — served by
+  `passport-model/server.py` (hosted at `https://passport-model.onrender.com`).
+  Any transport error / non-200 / timeout → `ERRORS.ScreeningEngineUnavailable.Wrap(...)`
+  (the model's `{error:{code,message}}` envelope is surfaced in the wrapped error).
   Unparseable body / empty verdict → `ERRORS.ScreeningEngineBadResponse`.
 - **`mock_engine.go`** — `MockEngine{Force, Err}`. Deterministic verdict derived from a
   checksum of the image bytes; `Force` pins a verdict, `Err` simulates an outage.
@@ -564,7 +565,7 @@ svc := service.NewScreeningService(
 
 ### The one stub — `internal/screening/http_engine_test.go`
 
-`httptest.Server` returning canned `/predict` JSON. This is the **only** place a
+`httptest.Server` returning canned `/api/v1/verify` JSON. This is the **only** place a
 dependency is faked. Everything else (DB, repositories, other services) stays real.
 
 ### Rules

@@ -42,9 +42,19 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 	users := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "username", Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_users_username")},
 		{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_users_email")},
+		{Keys: bson.D{{Key: "role", Value: 1}, {Key: "region", Value: 1}}, Options: options.Index().SetName("idx_users_role_region")},
 	}
 	if _, err := db.Collection(model.CollUsers).Indexes().CreateMany(ctx, users); err != nil {
 		return fmt.Errorf("users indexes: %w", err)
+	}
+
+	checkpoints := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "code", Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_checkpoints_code")},
+		{Keys: bson.D{{Key: "region", Value: 1}}, Options: options.Index().SetName("idx_checkpoints_region")},
+		{Keys: bson.D{{Key: "admin_id", Value: 1}}, Options: options.Index().SetName("idx_checkpoints_admin")},
+	}
+	if _, err := db.Collection(model.CollCheckpoints).Indexes().CreateMany(ctx, checkpoints); err != nil {
+		return fmt.Errorf("checkpoints indexes: %w", err)
 	}
 
 	screenings := []mongo.IndexModel{
@@ -52,7 +62,8 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("idx_screenings_status_created")},
 		{Keys: bson.D{{Key: "verdict", Value: 1}}, Options: options.Index().SetName("idx_screenings_verdict")},
 		{Keys: bson.D{{Key: "checkpoint_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("idx_screenings_checkpoint_created")},
-		{Keys: bson.D{{Key: "officer_id", Value: 1}}, Options: options.Index().SetName("idx_screenings_officer")},
+		{Keys: bson.D{{Key: "region", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("idx_screenings_region_created")},
+		{Keys: bson.D{{Key: "officer_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("idx_screenings_officer_created")},
 	}
 	if _, err := db.Collection(model.CollScreenings).Indexes().CreateMany(ctx, screenings); err != nil {
 		return fmt.Errorf("screenings indexes: %w", err)

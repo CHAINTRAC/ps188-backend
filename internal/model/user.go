@@ -44,6 +44,10 @@ const (
 )
 
 // User is the stored document. PasswordHash never leaves the repository layer.
+//
+// Region and CheckpointID scope what a user can see and do. A verifier is bound
+// to one checkpoint (and inherits that checkpoint's region); an admin is bound
+// to a region; a super admin has both empty, meaning org-wide.
 type User struct {
 	ID           bson.ObjectID `bson:"_id,omitempty"`
 	Username     string        `bson:"username"`
@@ -52,38 +56,49 @@ type User struct {
 	PasswordHash string        `bson:"password_hash"`
 	Role         Role          `bson:"role"`
 	Status       UserStatus    `bson:"status"`
+	Region       string        `bson:"region,omitempty"`
+	CheckpointID string        `bson:"checkpoint_id,omitempty"`
 	CreatedAt    time.Time     `bson:"created_at"`
 	UpdatedAt    time.Time     `bson:"updated_at"`
 }
 
 // UserView is the client-safe projection — no password hash.
 type UserView struct {
-	ID        string     `json:"id"`
-	Username  string     `json:"username"`
-	FullName  string     `json:"full_name"`
-	Email     string     `json:"email"`
-	Role      Role       `json:"role"`
-	Status    UserStatus `json:"status"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID           string     `json:"id"`
+	Username     string     `json:"username"`
+	FullName     string     `json:"full_name"`
+	Email        string     `json:"email"`
+	Role         Role       `json:"role"`
+	Status       UserStatus `json:"status"`
+	Region       string     `json:"region"`
+	CheckpointID string     `json:"checkpoint_id"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 func (u *User) View() UserView {
 	return UserView{
-		ID:        u.ID.Hex(),
-		Username:  u.Username,
-		FullName:  u.FullName,
-		Email:     u.Email,
-		Role:      u.Role,
-		Status:    u.Status,
-		CreatedAt: u.CreatedAt,
+		ID:           u.ID.Hex(),
+		Username:     u.Username,
+		FullName:     u.FullName,
+		Email:        u.Email,
+		Role:         u.Role,
+		Status:       u.Status,
+		Region:       u.Region,
+		CheckpointID: u.CheckpointID,
+		CreatedAt:    u.CreatedAt,
 	}
 }
 
-// CreateUserInput is the validated payload the user service accepts.
+// CreateUserInput is the validated payload the user service accepts. Region is
+// required when Role is admin; CheckpointID is required when Role is verifier
+// (its region is resolved from the checkpoint). Both are ignored for a super
+// admin. Cross-field rules are enforced in the service, not by binding tags.
 type CreateUserInput struct {
-	Username string `json:"username" binding:"required,min=3,max=50"`
-	FullName string `json:"full_name" binding:"required,min=1,max=120"`
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8,max=128"`
-	Role     Role   `json:"role" binding:"required"`
+	Username     string `json:"username" binding:"required,min=3,max=50"`
+	FullName     string `json:"full_name" binding:"required,min=1,max=120"`
+	Email        string `json:"email" binding:"required,email"`
+	Password     string `json:"password" binding:"required,min=8,max=128"`
+	Role         Role   `json:"role" binding:"required"`
+	Region       string `json:"region" binding:"omitempty,max=80"`
+	CheckpointID string `json:"checkpoint_id" binding:"omitempty,max=32"`
 }

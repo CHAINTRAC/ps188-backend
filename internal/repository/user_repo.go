@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -19,8 +20,13 @@ type UserRepository interface {
 	Create(ctx context.Context, u *model.User) (*model.User, error)
 	FindByID(ctx context.Context, id string) (*model.User, error)
 	FindByUsername(ctx context.Context, username string) (*model.User, error)
+	// FindByIdentifier matches a lower-cased value against either username or
+	// email — the UI sign-in form submits an email.
+	FindByIdentifier(ctx context.Context, identifier string) (*model.User, error)
 	List(ctx context.Context, cursor string, limit int64) (response.Page[model.UserView], error)
 	Count(ctx context.Context) (int64, error)
+	// UpdatePassword replaces the stored bcrypt hash.
+	UpdatePassword(ctx context.Context, id, passwordHash string) error
 }
 
 type mongoUserRepo struct {
@@ -71,6 +77,40 @@ func (r *mongoUserRepo) FindByUsername(ctx context.Context, username string) (*m
 		return nil, apperr.ERRORS.DatabaseError.Wrap(err)
 	}
 	return &u, nil
+}
+
+func (r *mongoUserRepo) FindByIdentifier(ctx context.Context, identifier string) (*model.User, error) {
+	id := strings.ToLower(strings.TrimSpace(identifier))
+	var u model.User
+	err := r.coll.FindOne(ctx, bson.M{"$or": bson.A{
+		bson.M{"username": id},
+		bson.M{"email": id},
+	}}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, apperr.ERRORS.UserNotFound
+	}
+	if err != nil {
+		return nil, apperr.ERRORS.DatabaseError.Wrap(err)
+	}
+	return &u, nil
+}
+
+func (r *mongoUserRepo) UpdatePassword(ctx context.Context, id, passwordHash string) error {
+	oid, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return apperr.ERRORS.UserNotFound
+	}
+	res, err := r.coll.UpdateOne(ctx, bson.M{"_id": oid}, bson.M{"$set": bson.M{
+		"password_hash": passwordHash,
+		"updated_at":    time.Now().UTC(),
+	}})
+	if err != nil {
+		return apperr.ERRORS.DatabaseError.Wrap(err)
+	}
+	if res.MatchedCount == 0 {
+		return apperr.ERRORS.UserNotFound
+	}
+	return nil
 }
 
 func (r *mongoUserRepo) List(ctx context.Context, cursor string, limit int64) (response.Page[model.UserView], error) {

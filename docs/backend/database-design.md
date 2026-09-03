@@ -18,13 +18,14 @@ Companion: `backend-architecture.md` (modules, endpoints, lifecycle),
 | Collection | Purpose | Written by |
 |---|---|---|
 | `users` | verifier / admin / superadmin accounts | `UserRepository` |
+| `checkpoints` | Checkpoint registry — code, region, managing admin, status | `CheckpointRepository` |
 | `screenings` | One document-screening case + engine result + officer decision | `ScreeningRepository` |
 | `blacklist` | Blacklisted document numbers and identities | `BlacklistRepository` |
 | `audit_logs` | Append-only trail of every state-changing action | `AuditRepository` (Insert only) |
 | `counters` | Atomic per-day sequence for `screenings.reference_no` | `ScreeningRepository.NextSequence` |
 | `fs.files` / `fs.chunks` | GridFS — stored document images | `storage.gridFSStore` |
 
-Planned (see `backend-architecture.md` §8): `checkpoints`, `cases`,
+Planned (see `backend-architecture.md` §8): `cases`,
 `face_verifications` (or embedded), `internal_notifications`.
 
 ---
@@ -40,23 +41,62 @@ Planned (see `backend-architecture.md` §8): `checkpoints`, `cases`,
   "password_hash": "$2a$12$...",            // bcrypt cost 12 — never returned by any API
   "role":          "verifier",              // verifier | admin | superadmin
   "status":        "active",                // active | disabled
+  "region":        "north",                 // admin: assigned region; verifier: inherited from checkpoint; superadmin: "" (all)
+  "checkpoint_id": "CP-04",                 // verifier only — the checkpoint code they work
   "created_at":    ISODate,
   "updated_at":    ISODate
 }
 ```
 
 - Three roles: `verifier` (works the checkpoint — submits screenings, records
-  decisions), `admin` (manages verifier accounts + the blacklist), `superadmin`
-  (manages admins and everything an admin can, org-wide). Admin-level routes accept
+  decisions), `admin` (manages verifier accounts + the blacklist for one region),
+  `superadmin` (manages admins and checkpoints, org-wide). Admin-level routes accept
   both `admin` and `superadmin`. The `officer_*` field names on `screenings` refer to
   the acting `verifier` — "officer" is the job, not a role.
-- `UserView` (API) drops `password_hash` and `updated_at`.
-- First boot seeds one `superadmin` (`ADMIN_USERNAME` / `ADMIN_PASSWORD` /
-  `ADMIN_EMAIL`) **only while the collection is empty**. Change the password immediately.
+- **Region scope.** A verifier's `region` is resolved from its `checkpoint_id`
+  against the `checkpoints` registry at create time — never entered directly. An
+  admin's `region` is required and must already exist in the registry. A superadmin
+  has both empty, meaning org-wide. `TokenData` carries `region` + `checkpoint_id`
+  so request scoping needs no per-call user lookup (re-issued on refresh).
+- `UserView` (API) drops `password_hash` and `updated_at`; exposes `region` +
+  `checkpoint_id`.
+- First boot seeds one `superadmin` (`SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` /
+  `SUPERADMIN_EMAIL`, legacy `ADMIN_*` still read as a fallback) **only while the
+  collection is empty**. Change the password immediately.
 - Disable, don't delete (`status: "disabled"`) — `audit_logs` and `screenings` reference
   `user_id` values by hex string.
+- Passwords: `POST /api/users/change-password` (self, verifies current) and
+  `POST /api/users/:id/reset-password` (admin → verifier in region, superadmin →
+  anyone; returns a temp password). Both audited.
 
-**Indexes:** `{username: 1}` unique · `{email: 1}` unique.
+**Indexes:** `{username: 1}` unique · `{email: 1}` unique · `{role: 1, region: 1}`.
+
+---
+
+## 2b. `checkpoints`
+
+```jsonc
+{
+  "_id":        ObjectId,
+  "code":       "CP-04",                    // unique, upper-cased — external id used in URLs and on users/screenings
+  "region":     "north",                    // authoritative source of a verifier's region
+  "admin_id":   "66d4...",                  // users._id hex of the managing admin (optional)
+  "status":     "active",                   // active | attention
+  "created_at": ISODate,
+  "updated_at": ISODate
+}
+```
+
+- Super-admin CRUD: `POST /api/checkpoints`, `PATCH /api/checkpoints/:code`
+  (assign admin / flip status). `GET /api/checkpoints` returns an admin's own
+  region only, a superadmin's everything. Audited as `checkpoint.created` /
+  `checkpoint.updated`.
+- `code` and `region` are immutable after creation; only `admin_id` and `status`
+  can be patched.
+- `CheckpointService.Resolve(code) → region` is used by user create (verifier) and,
+  later, screening submit to denormalise the region.
+
+**Indexes:** `{code: 1}` unique · `{region: 1}` · `{admin_id: 1}`.
 
 ---
 
@@ -66,12 +106,14 @@ Planned (see `backend-architecture.md` §8): `checkpoints`, `cases`,
 {
   "_id":            ObjectId,
   "reference_no":   "SCR-20260901-00001",   // unique, gapless per day (see §5)
-  "checkpoint_id":  "CP-DEL-T3",            // free string today; FK to `checkpoints` later
+  "checkpoint_id":  "CP-04",                // the officer's checkpoint code (from their token)
+  "region":         "north",                // denormalised from the checkpoint at submit time — powers admin scoping
   "officer_id":     "66d4...",              // users._id hex of the submitter
 
   "doc_type":       "passport",             // passport | visa | national_id | driving_license | permit
   "image_file_id":  ObjectId,               // GridFS fs.files._id
   "image_name":     "passport_front.jpg",
+  "flags":          ["blacklist_hit"],      // advisory markers (blacklist_hit | expired_document | face_mismatch | …) — never auto-blocking
 
   "submitted_number": "Z1234567",           // optional, what the officer typed
   "mrz_line1":        "P<INDDOE<<JANE<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",   // optional
@@ -129,12 +171,22 @@ Planned (see `backend-architecture.md` §8): `checkpoints`, `cases`,
 - **Images in GridFS.** Same database as everything else → one backup, one connection,
   no shared-volume problem across replicas. `image_file_id` is the `fs.files._id`.
 
+- **`region` denormalised, not looked up.** Copied from the officer's checkpoint
+  (carried on the JWT) when the screening is created. The list endpoint scopes a
+  verifier to their own `officer_id`, an admin to their own `region`, and a super
+  admin to nothing — `middleware.ScopeToActor` overrides any client-supplied
+  `officer_id` / `region` query param.
+- **`flags[]` is advisory.** Screening never auto-blocks; flags surface risk for the
+  officer. Populated by follow-up wiring (blacklist hit, expired document, face
+  mismatch).
+
 **Indexes:**
 `{reference_no: 1}` unique ·
 `{status: 1, created_at: -1}` (dashboard / processing queue) ·
 `{verdict: 1}` (filter) ·
 `{checkpoint_id: 1, created_at: -1}` (per-checkpoint history) ·
-`{officer_id: 1}` (an officer's own submissions).
+`{region: 1, created_at: -1}` (admin region history) ·
+`{officer_id: 1, created_at: -1}` (an officer's own submissions / "My History").
 List pagination uses the implicit `_id` order (`{_id: -1}`, `_id < cursor`).
 
 ---
@@ -183,8 +235,8 @@ List pagination uses the implicit `_id` order (`{_id: -1}`, `_id < cursor`).
 {
   "_id":            ObjectId,
   "user_id":        "66d4...",              // actor, users._id hex ("" for system actions)
-  "action":         "screening.decided",    // user.created | screening.submitted | screening.decided | blacklist.added | blacklist.deactivated
-  "reference_type": "screening",            // screening | user | blacklist
+  "action":         "screening.decided",    // auth.login | user.created | user.password_changed | user.password_reset | screening.submitted | screening.decided | blacklist.added | blacklist.deactivated | checkpoint.created | checkpoint.updated
+  "reference_type": "screening",            // screening | user | blacklist | checkpoint
   "reference_id":   "66d4...",
   "old_data":       { "verdict": "SUSPICIOUS", "risk_score": 0.42 },   // optional
   "new_data":       { "decision": "escalate", "reason": "...", "detail": "screening.decided · ESCALATE" },  // optional
@@ -255,8 +307,11 @@ db.Collection(model.CollUsers).Indexes().CreateMany(ctx, []mongo.IndexModel{
     {Keys: bson.D{{Key: "username", Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_users_username")},
     {Keys: bson.D{{Key: "email",    Value: 1}}, Options: options.Index().SetUnique(true).SetName("uq_users_email")},
 })
-// ... screenings, blacklist, audit_logs ...
+// ... checkpoints, screenings, blacklist, audit_logs ...
 ```
+
+`checkpoints`: `{code: 1}` unique · `{region: 1}` · `{admin_id: 1}`.
+`users` also carries `{role: 1, region: 1}` for region-scoped account lists.
 
 Adding a collection or an access pattern = add its `mongo.IndexModel` here. The
 `counters` and GridFS collections need no explicit index beyond their `_id`.
@@ -266,6 +321,8 @@ Adding a collection or an access pattern = add its `mongo.IndexModel` here. The
 ## 9. Relationships
 
 ```
+checkpoints (1) ──< users.checkpoint_id           (verifier — code string; region denormalised onto the user)
+checkpoints (1) ──1 users.admin_id                 (managing admin)
 users (1) ────< screenings.officer_id            (hex string, not a DB ref)
 users (1) ────< screenings.officer_decision.decided_by
 users (1) ────< blacklist.added_by

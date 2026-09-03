@@ -83,6 +83,18 @@ func (r *mongoScreeningRepo) List(ctx context.Context, f model.ScreeningFilter, 
 	if f.CheckpointID != "" {
 		filter["checkpoint_id"] = f.CheckpointID
 	}
+	if f.OfficerID != "" {
+		filter["officer_id"] = f.OfficerID
+	}
+	if f.Region != "" {
+		filter["region"] = f.Region
+	}
+	if f.Decided != nil {
+		filter["officer_decision"] = bson.M{"$exists": *f.Decided}
+	}
+	if f.DecisionValue != "" {
+		filter["officer_decision.decision"] = f.DecisionValue
+	}
 	if cursor != "" {
 		oid, err := bson.ObjectIDFromHex(cursor)
 		if err != nil {

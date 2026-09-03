@@ -15,12 +15,17 @@ import (
 	"github.com/sih26/ps188-backend/internal/model"
 )
 
+// verifyPath is the endpoint exposed by passport-model/server.py
+// (https://passport-model.onrender.com/docs).
+const verifyPath = "/api/v1/verify"
+
 // httpEngine calls a hosted FastAPI wrapper around predict_pipeline.py:
 //
-//	POST {baseURL}/predict   (multipart/form-data)
-//	  image, doc_type, doc_number, mrz_line1, mrz_line2
+//	POST {baseURL}/api/v1/verify   (multipart/form-data)
+//	  image, doc_type (auto|passport|aadhaar), doc_number, mrz_line1, mrz_line2
 //	  header X-API-Key: {apiKey}
-//	→ 200 {verdict, risk_score, reasons[], evidence_table{}, extracted_fields{}}
+//	→ 200 {success, filename, doc_type, verdict, risk_score, reasons[], evidence_table{}}
+//	→ 4xx/5xx {success:false, error:{code, message}}
 type httpEngine struct {
 	baseURL string
 	apiKey  string
@@ -37,11 +42,22 @@ func NewHTTPEngine(baseURL, apiKey string, timeout time.Duration) Engine {
 }
 
 type predictResponse struct {
+	Success         bool              `json:"success"`
+	Filename        string            `json:"filename"`
+	DocType         string            `json:"doc_type"`
 	Verdict         string            `json:"verdict"`
 	RiskScore       float64           `json:"risk_score"`
 	Reasons         []string          `json:"reasons"`
-	ExtractedFields map[string]string `json:"extracted_fields"`
+	ExtractedFields map[string]string `json:"extracted_fields"` // not sent today — real OCR fields land in Phase D
 	EvidenceTable   map[string]any    `json:"evidence_table"`
+}
+
+// errorResponse is the model's failure envelope: {"success":false,"error":{"code","message"}}.
+type errorResponse struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResult, error) {
@@ -50,7 +66,7 @@ func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResu
 		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/predict", body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+verifyPath, body)
 	if err != nil {
 		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(err)
 	}
@@ -67,8 +83,13 @@ func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResu
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode != http.StatusOK {
+		detail := truncate(raw, 300)
+		var er errorResponse
+		if json.Unmarshal(raw, &er) == nil && er.Error.Code != "" {
+			detail = er.Error.Code + ": " + er.Error.Message
+		}
 		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(
-			fmt.Errorf("engine status %d: %s", resp.StatusCode, truncate(raw, 300)))
+			fmt.Errorf("engine status %d — %s", resp.StatusCode, detail))
 	}
 
 	var pr predictResponse
@@ -120,15 +141,15 @@ func buildMultipart(req ScreenRequest) (io.Reader, string, error) {
 	return &buf, w.FormDataContentType(), nil
 }
 
-// docTypeParam maps our doc types onto the pipeline's expected values. The
-// pipeline currently branches on "passport" / "aadhar"; everything else it
-// treats generically, so we pass "auto" and let it route.
+// docTypeParam maps our doc types onto the values server.py accepts
+// (ALLOWED_DOC_TYPES = {"auto", "passport", "aadhaar"}). Anything else is sent
+// as "auto" and the pipeline routes it.
 func docTypeParam(d model.DocType) string {
 	switch d {
 	case model.DocPassport:
 		return "passport"
 	case model.DocNationalID:
-		return "aadhar"
+		return "aadhaar"
 	default:
 		return "auto"
 	}

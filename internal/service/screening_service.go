@@ -26,6 +26,7 @@ type SubmitInput struct {
 	OfficerID    string
 	IP           string
 	CheckpointID string
+	Region       string // denormalised from the officer's checkpoint (see the handler)
 	DocType      model.DocType
 	DocNumber    string
 	MRZLine1     string
@@ -80,6 +81,7 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 	sc := &model.Screening{
 		ReferenceNo:     ref,
 		CheckpointID:    in.CheckpointID,
+		Region:          in.Region,
 		OfficerID:       in.OfficerID,
 		DocType:         in.DocType,
 		ImageFileID:     imageOID,
@@ -138,6 +140,7 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 			"reference_no": updated.ReferenceNo,
 			"status":       updated.Status,
 			"verdict":      updated.Verdict,
+			"region":       updated.Region,
 		},
 		IPAddress: in.IP,
 		CreatedAt: time.Now().UTC(),

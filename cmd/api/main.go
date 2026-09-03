@@ -58,6 +58,7 @@ func run(log *slog.Logger) error {
 	screeningRepo := repository.NewScreeningRepository(db)
 	auditRepo := repository.NewAuditRepository(db)
 	blacklistRepo := repository.NewBlacklistRepository(db)
+	checkpointRepo := repository.NewCheckpointRepository(db)
 
 	// External screening engine.
 	var engine screening.Engine
@@ -72,21 +73,23 @@ func run(log *slog.Logger) error {
 
 	// JWT + services.
 	jwtMgr := jwt.NewManager(cfg.JWTSecret, cfg.JWTRefreshSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
-	authSvc := service.NewAuthService(userRepo, jwtMgr)
-	userSvc := service.NewUserService(userRepo, auditRepo)
+	checkpointSvc := service.NewCheckpointService(checkpointRepo, auditRepo)
+	authSvc := service.NewAuthService(userRepo, auditRepo, jwtMgr)
+	userSvc := service.NewUserService(userRepo, auditRepo, checkpointSvc)
 	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, storage.NewGridFS(db), engine, log)
 	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo)
 
-	if seeded, err := userSvc.SeedAdmin(ctx, cfg.AdminUsername, cfg.AdminPassword, cfg.AdminEmail); err != nil {
+	if seeded, err := userSvc.SeedAdmin(ctx, cfg.SuperAdminUsername, cfg.SuperAdminPassword, cfg.SuperAdminEmail); err != nil {
 		return err
 	} else if seeded {
 		log.Warn("seeded bootstrap super admin — change the password immediately",
-			slog.String("username", cfg.AdminUsername))
+			slog.String("username", cfg.SuperAdminUsername))
 	}
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Cfg: cfg, Log: log, Mongo: db, JWT: jwtMgr,
-		Auth: authSvc, Users: userSvc, Screenings: screeningSvc, Blacklist: blacklistSvc,
+		Auth: authSvc, Users: userSvc, Screenings: screeningSvc,
+		Blacklist: blacklistSvc, Checkpoints: checkpointSvc,
 	})
 
 	srv := &http.Server{

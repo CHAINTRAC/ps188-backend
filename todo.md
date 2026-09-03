@@ -136,42 +136,50 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
       `Role.Valid()` + `Role.AtLeastAdmin()`. `RoleSupervisor` renamed everywhere.
 - [x] `middleware.RequireRole(admin, superadmin)` on account + blacklist routes;
       `verifier` on screening submit/decision.
-- [x] `SeedAdmin` now seeds a `superadmin` (env keys unchanged: `ADMIN_*`).
+- [x] `SeedAdmin` now seeds a `superadmin` (`SUPERADMIN_*` env, legacy `ADMIN_*` fallback).
 - [x] Docs + tests updated to the 3-role model.
-- [ ] `model/user.go` — regions: still TODO (see below)
-- [ ] `model/user.go` — add `Region string` (admin + verifier) and `CheckpointID string`
+- [x] `model/user.go` — add `Region string` (admin + verifier) and `CheckpointID string`
       (verifier). `UserView` exposes both. Superadmin has empty region = all.
-- [ ] `CreateUserInput` — add `region` (required for admin), `checkpoint_id` (required
+- [x] `CreateUserInput` — add `region` (required for admin), `checkpoint_id` (required
       for verifier); validate `checkpoint_id`/`region` against the checkpoints registry.
-- [ ] `model/checkpoint.go` — `Checkpoint` { `code` (e.g. `CP-04`), `region`, `admin_id`,
+      (`MISSING_SCOPE_FIELD` 30006, `UNKNOWN_REGION` 80004.)
+- [x] `model/checkpoint.go` — `Checkpoint` { `code` (e.g. `CP-04`), `region`, `admin_id`,
       `status` active|attention, timestamps }, `CheckpointView`.
-- [ ] `repository/checkpoint_repo.go` — create, list (filter by region), find by code,
-      update (assign admin / status). Unique index on `code`, index on `region`.
-- [ ] `service/checkpoint_service.go` — superadmin CRUD; `Resolve(code) → region` used by
-      screening submit and user create.
-- [ ] `transport/http` — `POST /api/checkpoints` (superadmin), `GET /api/checkpoints`
-      (admin = own region, superadmin = all), `PATCH /api/checkpoints/:code` (superadmin).
-      Audit `checkpoint.created` / `checkpoint.updated`.
-- [ ] `middleware/auth.go` — `RequireRole` for the 3 roles; add `Principal.Region` /
-      `Principal.CheckpointID`. Helper `ScopeToActor(c, filter)` that forces
-      `region=` for admin, `officer_id=` for verifier, no-op for superadmin.
-- [ ] `platform/jwt` — `TokenData` gains `Region` (and `CheckpointID`) so request
-      scoping needs no per-call user lookup. Re-issue on refresh.
-- [ ] Auth login by **email or username** — UI sign-in submits email. Accept an
-      `identifier` (or keep `username` field but match against both). Keep the
-      unknown-user / wrong-password indistinguishability.
-- [ ] `auth_service.Login` — write an `auth.login` audit entry on success (actor, IP,
-      region). New `ActionAuthLogin` constant.
-- [ ] `POST /api/users/change-password` — `{current_password, new_password}`, any authed
-      user, bcrypt-verify current. Audit `user.password_changed`. (UI: Profile → Change
-      Password.)
-- [ ] `POST /api/users/:id/reset-password` — admin resets a verifier in their region,
-      superadmin resets anyone. Returns nothing / a temp password. Audit
-      `user.password_reset`. (UI: admin audit log shows this action.)
-- [ ] `cmd/api/main.go` — seed a bootstrap **superadmin** (was admin). Update
-      `ADMIN_*` env names → `SUPERADMIN_*` (keep back-compat read).
-- [ ] Tests — role validity, region scoping on list queries, checkpoint CRUD,
-      email login, change/reset password, login audit.
+- [x] `repository/checkpoint_repo.go` — create, list (filter by region/admin), find by code
+      (case-insensitive), update (assign admin / status), `RegionExists`. Unique index on
+      `code`, index on `region` + `admin_id`.
+- [x] `service/checkpoint_service.go` — superadmin CRUD; `Resolve(code) → region` +
+      `RegionExists(region)` used by user create (screening submit wiring is Phase C).
+- [x] `transport/http` — `POST /api/checkpoints` (superadmin), `GET /api/checkpoints`
+      (admin = own region, superadmin = all), `GET /api/checkpoints/:code` (admin),
+      `PATCH /api/checkpoints/:code` (superadmin). Audit `checkpoint.created` /
+      `checkpoint.updated`.
+- [x] `middleware/auth.go` — `RequireRole` for the 3 roles (unchanged); `Principal` now
+      carries `Region` / `CheckpointID` via `TokenData`. Helper `RegionScope(p)` (own
+      region for admin/verifier, empty for superadmin) — the full `ScopeToActor(c, filter)`
+      for screening lists lands in Phase C.
+- [x] `platform/jwt` — `TokenData` gains `Region` + `CheckpointID`. Re-issued on refresh
+      from the current user record.
+- [x] Auth login by **email or username** — `loginBody` accepts `identifier` / `email` /
+      `username`; `UserRepository.FindByIdentifier` matches either. Unknown-user /
+      wrong-password indistinguishability kept.
+- [x] `auth_service.Login` — writes an `auth.login` audit entry on success (actor, IP,
+      region). New `ActionAuthLogin` constant. `Login` now takes an `ip` arg.
+- [x] `POST /api/users/change-password` — `{current_password, new_password}`, any authed
+      user, bcrypt-verify current. `INVALID_CURRENT_PASSWORD` 30005. Audit
+      `user.password_changed`.
+- [x] `POST /api/users/:id/reset-password` — admin resets a verifier in their region,
+      superadmin resets anyone. Returns `{temp_password}`. Audit `user.password_reset`.
+- [x] `cmd/api/main.go` — seeds a bootstrap **superadmin** (already the role). Config
+      reads `SUPERADMIN_*` and falls back to legacy `ADMIN_*`. `.env.*` updated.
+- [x] Tests — role/status validity (`model/role_test.go`), checkpoint repo + service CRUD,
+      `Resolve`/`RegionExists`, verifier region resolution, admin region validation,
+      email login, change/reset password + scope, `auth.login` audit. *(Written; run
+      against a real Mongo — local Mongo/Docker were both down at commit time, so not yet
+      executed here.)*
+- [x] Docs — `backend-architecture.md` §2/§4.1/§4.2/§4.6/§5/§7/§8, `database-design.md`
+      §1/§2/§2b/§5/§8/§9, `README.md` updated for regions, checkpoints, the new
+      endpoints, `SUPERADMIN_*`, and the `8xxxx` error domain.
 
 ## Phase B — Decision vocabulary  *(done 2026-09-02)*
 - [x] `model/screening.go` — `Decision` enum → `DecisionAccept`, `DecisionEscalate`,
@@ -184,20 +192,29 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 - [x] Docs — `backend-architecture.md` §4.3 / §5, `database-design.md` §3 / §5, BACKEND_GUIDE.
 
 ## Phase C — Screening scoping, filters, denormalised region
-- [ ] `model/screening.go` — add `Region string` (denormalised from the officer's
-      checkpoint at submit time) and `Flags []string`. Index `region + created_at`.
-- [ ] `ScreeningFilter` — add `OfficerID`, `Region`, `Decided *bool` (undecided filter),
+- [x] `model/screening.go` — added `Region string` (denormalised from the officer's
+      checkpoint at submit time) and `Flags []string` (advisory markers; `ScreeningView`
+      always emits `flags` as `[]`). Index `region + created_at`, and `officer_id` bumped
+      to `officer_id + created_at`.
+- [x] `ScreeningFilter` — added `OfficerID`, `Region`, `Decided *bool` (undecided filter),
       `DecisionValue`.
-- [ ] `screening_repo.List` — apply the new filters.
-- [ ] `screening_handler.list` — call `ScopeToActor`: verifier → own `officer_id`
-      (UI "My History"); admin → own `region`; superadmin → unscoped. Honour
-      `?decided=false`, `?verdict=`, `?doc_type=`.
-- [ ] "Flagged for review" (UI admin dashboard) = `verdict ∈ {FAKE,SUSPICIOUS}` AND
-      `officer_decision` unset AND region — served by the list endpoint with filters,
-      no new route.
-- [ ] `screening_service.Submit` — resolve officer → checkpoint → region, stamp
-      `region` on the doc.
-- [ ] Tests — verifier sees only own; admin sees only region; undecided filter.
+- [x] `screening_repo.List` — applies all the new filters (`officer_decision` `$exists`
+      for `Decided`, `officer_decision.decision` for `DecisionValue`).
+- [x] `middleware.ScopeToActor(c, *ScreeningFilter)` + `screening_handler.list` — verifier
+      → own `officer_id` (UI "My History"); admin → own `region`; superadmin → unscoped.
+      Honours `?decided=false`, `?decision=`, `?verdict=`, `?doc_type=`, `?status=`,
+      `?checkpoint_id=`. Scoping overrides any client-supplied `officer_id`/`region`.
+- [x] "Flagged for review" (UI admin dashboard) = `?verdict=SUSPICIOUS|FAKE&decided=false`
+      through the scoped list endpoint — no new route.
+- [x] `screening_service.Submit` — `SubmitInput.Region`; handler fills `checkpoint_id`
+      + `region` from the verifier's token (Phase A stamped them on the JWT), no per-call
+      user lookup. `screening.submitted` audit `new_data.region` added.
+- [x] Tests — `screening_repo_test.go` list filters (officer / region / undecided /
+      decision-value / flagged-for-review shape); `screening_service_test.go` region
+      stamping + region list; `middleware/auth_test.go` `ScopeToActor` per role +
+      `RegionScope`. *(mongo-backed tests skip locally — no Mongo/Docker; pure tests pass.)*
+- [x] Docs — `backend-architecture.md` §4.3, `database-design.md` §3 (doc shape,
+      `region`/`flags`, indexes, scoping note).
 
 ## Phase D — OCR fields, evidence tone, risk scale  *(coordinate with the FastAPI model)*
 - [ ] Per-field confidence — `EngineResult.ExtractedFields` becomes
@@ -332,15 +349,18 @@ Revisit after the happy path runs through the UI.
 > server and is what `SCREENING_SERVICE_URL` points at.
 
 ## Do first — `httpEngine` ↔ `passport-model/server.py` contract mismatches
-*(blocks every real, non-mock screening — small fixes)*
-- [ ] `screening/http_engine.go` — POSTs to `{url}/predict`; the server serves
-      `POST /api/v1/verify`. Align the path.
-- [ ] `screening/http_engine.go` `docTypeParam()` — sends `doc_type=aadhar`; the server
-      only accepts `auto | passport | aadhaar`. Send `aadhaar`.
-- [ ] Response envelope — server returns `{success, verdict, risk_score, reasons,
-      evidence_table}` (no top-level `extracted_fields`). `predictResponse` decodes the
-      known keys fine and leaves `extracted_fields` nil — OK for the POC; real OCR
-      fields land in Phase D.
+*(done 2026-09-03 — real screening now hits `https://passport-model.onrender.com`)*
+- [x] `screening/http_engine.go` — path aligned to `POST /api/v1/verify`.
+- [x] `screening/http_engine.go` `docTypeParam()` — `national_id` → `aadhaar` (was `aadhar`).
+- [x] Response envelope — `predictResponse` carries `success/filename/doc_type` too;
+      `extracted_fields` stays nil (no top-level field from the server) until Phase D.
+      `{error:{code,message}}` failure envelope is parsed and surfaced in the wrapped error.
+- [x] Config defaults — `SCREENING_ENGINE=http`,
+      `SCREENING_SERVICE_URL=https://passport-model.onrender.com`,
+      `SCREENING_SERVICE_API_KEY=midv2020-secret-api-key-2026`, timeout `60s`.
+      `.env.example` + `.env.development.local` updated.
+- [x] Tests — `http_engine_test.go` path + error-code passthrough + `aadhaar` mapping.
+- [x] Docs — `backend-architecture.md` §6, `BACKEND_GUIDE.md` §12.
 
 ## Deferred to post-POC
 

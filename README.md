@@ -31,22 +31,29 @@ docker compose up --build
 ```
 
 - MongoDB comes up first (healthcheck-gated), then the backend on **:8080**.
-- `SCREENING_ENGINE=mock` by default — the stack runs with **no external model**.
-  Set `SCREENING_ENGINE=http` + `SCREENING_SERVICE_URL=...` to use the real FastAPI model.
-- First boot seeds a super admin: `ADMIN_USERNAME` / `ADMIN_PASSWORD` (`admin` / `admin12345`).
+- `SCREENING_ENGINE=http` by default — points at the hosted model
+  `https://passport-model.onrender.com` (`/api/v1/verify`, Swagger at `/docs`).
+  Set `SCREENING_ENGINE=mock` to run the stack offline with a deterministic stub.
+- First boot seeds a super admin: `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD`
+  (`admin` / `admin12345`; legacy `ADMIN_*` names still read as a fallback).
 
 ```bash
 curl localhost:8080/health
 
-# login as the seeded super admin
+# login as the seeded super admin (identifier = username or email)
 curl -s -XPOST localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin12345"}'
+  -d '{"identifier":"admin","password":"admin12345"}'
 
-# create a verifier (admin or superadmin token)
+# register a checkpoint (superadmin token) — its region backs verifier scoping
+curl -s -XPOST localhost:8080/api/checkpoints -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"CP-04","region":"north"}'
+
+# create a verifier bound to that checkpoint (admin or superadmin token)
 curl -s -XPOST localhost:8080/api/users -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"v.jane","full_name":"Jane","email":"jane@ps188.local","password":"jane12345","role":"verifier"}'
+  -d '{"username":"v.jane","full_name":"Jane","email":"jane@ps188.local","password":"jane12345","role":"verifier","checkpoint_id":"CP-04"}'
 
 # blacklist a stolen passport number (admin or superadmin token)
 curl -s -XPOST localhost:8080/api/blacklist -H "Authorization: Bearer $ADMIN" \
@@ -59,7 +66,7 @@ curl -s "localhost:8080/api/blacklist/check?doc_number=Z1234567" -H "Authorizati
 # submit a screening (verifier token)
 curl -s -XPOST localhost:8080/api/screenings -H "Authorization: Bearer $VERIFIER" \
   -F document=@../Al-Based-Fake-Identity-Document-Screening-System/sample/passport/download.jpg \
-  -F doc_type=passport -F doc_number=Z1234567 -F checkpoint_id=CP-1
+  -F doc_type=passport -F doc_number=Z1234567 -F checkpoint_id=CP-04
 
 curl -s localhost:8080/api/screenings -H "Authorization: Bearer $VERIFIER"
 ```
@@ -81,9 +88,9 @@ cmd/api/            process entrypoint + lifecycle
 internal/config     env → Config
 internal/database   Mongo connect + EnsureIndexes
 internal/apperr     AppError + ERRORS catalog
-internal/model      User, Screening, BlacklistEntry, AuditLog
+internal/model      User, Checkpoint, Screening, BlacklistEntry, AuditLog
 internal/repository Mongo data access (interfaces + impls)
-internal/service    business logic (auth, users, screening orchestration)
+internal/service    business logic (auth, users, checkpoints, screening orchestration)
 internal/screening  external FastAPI model client (http + mock)
 internal/storage    GridFS document-image store
 internal/transport/http  Gin router + handlers

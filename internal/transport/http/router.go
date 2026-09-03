@@ -21,14 +21,15 @@ import (
 
 // Deps is everything the HTTP layer needs, assembled in main.
 type Deps struct {
-	Cfg        *config.Config
-	Log        *slog.Logger
-	Mongo      *mongo.Database
-	JWT        *jwt.Manager
-	Auth       *service.AuthService
-	Users      *service.UserService
-	Screenings *service.ScreeningService
-	Blacklist  *service.BlacklistService
+	Cfg         *config.Config
+	Log         *slog.Logger
+	Mongo       *mongo.Database
+	JWT         *jwt.Manager
+	Auth        *service.AuthService
+	Users       *service.UserService
+	Screenings  *service.ScreeningService
+	Blacklist   *service.BlacklistService
+	Checkpoints *service.CheckpointService
 }
 
 // NewRouter builds the fully-wired gin.Engine.
@@ -52,10 +53,12 @@ func NewRouter(d Deps) *gin.Engine {
 	userH := &userHandler{users: d.Users}
 	scrH := &screeningHandler{screenings: d.Screenings, maxUpload: d.Cfg.MaxUploadBytes}
 	blH := &blacklistHandler{blacklist: d.Blacklist}
+	cpH := &checkpointHandler{checkpoints: d.Checkpoints}
 
 	authed := middleware.Authenticate(d.JWT)
 	// admin-level routes are open to both admin and super admin.
 	admin := middleware.RequireRole(string(model.RoleAdmin), string(model.RoleSuperAdmin))
+	superadmin := middleware.RequireRole(string(model.RoleSuperAdmin))
 	verifier := middleware.RequireRole(string(model.RoleVerifier))
 
 	api := r.Group("/api")
@@ -66,8 +69,10 @@ func NewRouter(d Deps) *gin.Engine {
 
 		users := api.Group("/users", authed)
 		users.GET("/profile", userH.profile)
+		users.POST("/change-password", userH.changePassword)
 		users.POST("", admin, userH.create)
 		users.GET("", admin, userH.list)
+		users.POST("/:id/reset-password", admin, userH.resetPassword)
 
 		scr := api.Group("/screenings", authed)
 		scr.POST("", verifier, scrH.submit)
@@ -82,6 +87,12 @@ func NewRouter(d Deps) *gin.Engine {
 		bl.GET("", admin, blH.list)
 		bl.GET("/:id", admin, blH.get)
 		bl.POST("/:id/deactivate", admin, blH.deactivate)
+
+		cp := api.Group("/checkpoints", authed)
+		cp.POST("", superadmin, cpH.create)
+		cp.GET("", admin, cpH.list) // admin = own region, super admin = all
+		cp.GET("/:code", admin, cpH.get)
+		cp.PATCH("/:code", superadmin, cpH.update)
 	}
 	return r
 }

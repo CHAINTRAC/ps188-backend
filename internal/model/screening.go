@@ -90,10 +90,15 @@ type Screening struct {
 	ID           bson.ObjectID `bson:"_id,omitempty"`
 	ReferenceNo  string        `bson:"reference_no"`
 	CheckpointID string        `bson:"checkpoint_id"`
-	OfficerID    string        `bson:"officer_id"` // user id hex of the submitter
+	Region       string        `bson:"region,omitempty"` // denormalised from the officer's checkpoint at submit time
+	OfficerID    string        `bson:"officer_id"`       // user id hex of the submitter
 	DocType      DocType       `bson:"doc_type"`
 	ImageFileID  bson.ObjectID `bson:"image_file_id"` // GridFS file id
 	ImageName    string        `bson:"image_name"`
+
+	// Flags are advisory markers raised during screening (e.g. "blacklist_hit",
+	// "expired_document", "face_mismatch"). Never auto-blocking — the officer decides.
+	Flags []string `bson:"flags,omitempty"`
 
 	SubmittedNumber string            `bson:"submitted_number,omitempty"`
 	MRZLine1        string            `bson:"mrz_line1,omitempty"`
@@ -117,9 +122,11 @@ type ScreeningView struct {
 	ID              string           `json:"id"`
 	ReferenceNo     string           `json:"reference_no"`
 	CheckpointID    string           `json:"checkpoint_id"`
+	Region          string           `json:"region"`
 	OfficerID       string           `json:"officer_id"`
 	DocType         DocType          `json:"doc_type"`
 	ImageURL        string           `json:"image_url"`
+	Flags           []string         `json:"flags"`
 	Status          ScreeningStatus  `json:"status"`
 	Verdict         Verdict          `json:"verdict"`
 	RiskScore       float64          `json:"risk_score"`
@@ -131,13 +138,19 @@ type ScreeningView struct {
 }
 
 func (s *Screening) View() ScreeningView {
+	flags := s.Flags
+	if flags == nil {
+		flags = []string{}
+	}
 	return ScreeningView{
 		ID:              s.ID.Hex(),
 		ReferenceNo:     s.ReferenceNo,
 		CheckpointID:    s.CheckpointID,
+		Region:          s.Region,
 		OfficerID:       s.OfficerID,
 		DocType:         s.DocType,
 		ImageURL:        "/api/screenings/" + s.ID.Hex() + "/image",
+		Flags:           flags,
 		Status:          s.Status,
 		Verdict:         s.Verdict,
 		RiskScore:       s.Risk,
@@ -155,4 +168,11 @@ type ScreeningFilter struct {
 	DocType      DocType
 	Status       ScreeningStatus
 	CheckpointID string
+	OfficerID    string
+	Region       string
+	// Decided filters on whether an officer decision has been recorded:
+	// a pointer to true → only decided, to false → only undecided, nil → both.
+	Decided *bool
+	// DecisionValue filters on the recorded decision (accept|escalate|reject).
+	DecisionValue Decision
 }

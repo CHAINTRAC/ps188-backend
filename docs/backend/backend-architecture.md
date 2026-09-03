@@ -27,9 +27,9 @@ The four PS modules:
 | 3 — Tampering Detection (core AI) | External model (CNN, ELA, stamp/photo/text) | Stores the forensic evidence + drives `risk_score` |
 | 4 — Face Verification | *Future module* (see §7) | Not in the current slice |
 
-**The AI itself is not in this repo.** It is
-`Al-Based-Fake-Identity-Document-Screening-System/predict_pipeline.py`, wrapped in a
-**separately hosted FastAPI service**. This backend is the system of record and the
+**The AI itself is not in this repo.** It is `passport-model/` (FastAPI `server.py`
+around `predict_pipeline.py`), **separately hosted** at
+`https://passport-model.onrender.com`. This backend is the system of record and the
 officer-facing API; it calls that model over HTTP (§6).
 
 ---
@@ -43,16 +43,23 @@ Docker Compose (backend + MongoDB).
 per-agency databases — this is one agency install. Three roles (names match the
 operator-facing UI):
 
-| Role | Can |
-|---|---|
-| `verifier` | the checkpoint officer — submit screenings, view them, record a decision, run blacklist checks |
-| `admin` | everything a verifier's account needs: create / list verifier accounts, manage the blacklist; full read access to screenings |
-| `superadmin` | everything an `admin` can, plus manage `admin` accounts — org-wide |
+| Role | Scope | Can |
+|---|---|---|
+| `verifier` | one checkpoint (region inherited) | the checkpoint officer — submit screenings, view them, record a decision, run blacklist checks |
+| `admin` | one region | everything a verifier's account needs: create / list verifier accounts, manage the blacklist; full read access to screenings; reset a verifier's password |
+| `superadmin` | org-wide | everything an `admin` can, plus manage `admin` accounts and the checkpoint registry |
 
 Admin-level routes are authorised for **both** `admin` and `superadmin`
-(`RequireRole(admin, superadmin)`). Accounts are created by an `admin` or
-`superadmin`. First run seeds one bootstrap `superadmin` from `ADMIN_USERNAME` /
-`ADMIN_PASSWORD` (only while the `users` collection is empty).
+(`RequireRole(admin, superadmin)`); checkpoint create/patch are `superadmin` only.
+Accounts are created by an `admin` or `superadmin`. First run seeds one bootstrap
+`superadmin` from `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` / `SUPERADMIN_EMAIL`
+(legacy `ADMIN_*` still read as a fallback; only while the `users` collection is empty).
+
+**Region model.** A verifier is bound to one `checkpoint_id`; its `region` is
+resolved from the `checkpoints` registry at create time and denormalised onto the
+user. An admin is bound to a `region` (required, must already exist in the
+registry). A superadmin has both empty = org-wide. `TokenData` carries `region` +
+`checkpoint_id` so request scoping needs no per-call user lookup.
 
 > "Officer" throughout this doc and the code (`officer_id`, `officer_decision`) means
 > the human working the checkpoint — always a `verifier`-role user. It is a job
@@ -70,9 +77,9 @@ internal/config         env → Config
 internal/database       Mongo connect + EnsureIndexes
 internal/apperr         AppError + ERRORS catalog
 internal/response       JSON envelopes + Page[T]
-internal/model          User, Screening, AuditLog (+ Views, enums)
-internal/repository     UserRepository, ScreeningRepository, AuditRepository
-internal/service        AuthService, UserService, ScreeningService
+internal/model          User, Checkpoint, Screening, Blacklist, AuditLog (+ Views, enums)
+internal/repository     User / Checkpoint / Screening / Blacklist / Audit repositories
+internal/service        Auth / User / Checkpoint / Screening / Blacklist services
 internal/screening      Engine iface + httpEngine + MockEngine   ← external model client
 internal/storage        FileStore iface + GridFS impl            ← document images
 internal/platform/jwt   token Manager
@@ -100,19 +107,21 @@ All routes mount under `/api`. Middleware order (guide §10):
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| POST | `/login` | public | `{username, password}` → `{user, access_token, refresh_token}`. Unknown user and wrong password return the same `INVALID_CREDENTIALS` (20007). |
-| POST | `/refresh-token` | public | `{refresh_token}` → `{access_token}`. Re-checks the account still exists and is `active`. |
+| POST | `/login` | public | `{identifier\|email\|username, password}` → `{user, access_token, refresh_token}`. `identifier` matches username **or** email (the UI submits email). Unknown user and wrong password return the same `INVALID_CREDENTIALS` (20007). Audit on success: `auth.login` (actor, IP, region). |
+| POST | `/refresh-token` | public | `{refresh_token}` → `{access_token}`. Re-checks the account still exists and is `active`; re-issues `region` / `checkpoint_id` claims from the current record. |
 
 Access token TTL `JWT_ACCESS_TTL` (default 1h); refresh `JWT_REFRESH_TTL` (default 30d).
-`TokenData` = `{UserID, Username, Role}`. Stateless — logout is client-side token drop.
+`TokenData` = `{UserID, Username, Role, Region, CheckpointID}`. Stateless — logout is client-side token drop.
 
 ### 4.2 Users — `/api/users`  (all require auth)
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| GET | `/profile` | any authed | Own `UserView` |
-| POST | `/` | admin / superadmin | Create a user: `{username, full_name, email, password, role}`. `USERNAME_TAKEN` / `EMAIL_TAKEN` on conflict, `INVALID_ROLE` for an unknown role. Audit: `user.created`. |
+| GET | `/profile` | any authed | Own `UserView` (incl. `region`, `checkpoint_id`) |
+| POST | `/` | admin / superadmin | Create a user: `{username, full_name, email, password, role, region?, checkpoint_id?}`. `checkpoint_id` is **required for a verifier** (region resolved from it); `region` is **required for an admin** (must exist in the registry). `USERNAME_TAKEN` / `EMAIL_TAKEN` on conflict, `INVALID_ROLE` for an unknown role, `MISSING_SCOPE_FIELD` (30006), `UNKNOWN_REGION` (80004). Audit: `user.created`. |
 | GET | `/` | admin / superadmin | Cursor-paginated `UserView[]` |
+| POST | `/change-password` | any authed | `{current_password, new_password}` — verifies current, rehashes. `INVALID_CURRENT_PASSWORD` (30005). Audit: `user.password_changed`. |
+| POST | `/:id/reset-password` | admin / superadmin | Admin resets a `verifier` in their own region; superadmin resets anyone. Returns `{temp_password}`. `FORBIDDEN` (20006) out of scope. Audit: `user.password_reset`. |
 
 ### 4.3 Screenings — `/api/screenings`  (all require auth)
 
@@ -121,8 +130,8 @@ engine's result + (optionally) an officer's decision.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `checkpoint_id`. Flow in §5. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
-| GET | `/` | any authed | List. Filters `?verdict=&doc_type=&status=&checkpoint_id=`, cursor-paginated, newest first. |
+| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
+| GET | `/` | any authed | List. **Auto-scoped** by `middleware.ScopeToActor`: verifier → own `officer_id` (UI "My History"), admin → own `region`, super admin → unscoped. Extra filters `?verdict=&doc_type=&status=&checkpoint_id=&decided=false&decision=`. Cursor-paginated, newest first. "Flagged for review" (admin dashboard) = `?verdict=SUSPICIOUS` (or `FAKE`) `&decided=false` — no dedicated route. |
 | GET | `/:id` | any authed | Full detail incl. `engine.evidence` (the explainability table) and `engine.reasons`. |
 | GET | `/:id/image` | any authed | Streams the stored document image (from GridFS), `Content-Type` sniffed. |
 | POST | `/:id/decision` | verifier | Record the officer's manual call: `{decision: accept\|escalate\|reject, reason}` (names match the UI). Exactly one per screening — a second call → `ALREADY_DECIDED` (40002). Not allowed while `status=processing` → `SCREENING_NOT_COMPLETED` (40004). Audit: `screening.decided` (`new_data.detail` = `screening.decided · ACCEPT\|ESCALATE\|REJECT`). |
@@ -146,13 +155,30 @@ Entries are deactivated, never deleted.
 > `blacklist_hit` flag, bump `risk_score`) is a follow-up — the service method is
 > ready; only the `Submit` call site and a `flags[]` field on `screenings` are missing.
 
+### 4.6 Checkpoints — `/api/checkpoints`  (all require auth)
+
+The checkpoint registry. `code` (e.g. `CP-04`, unique, upper-cased) is the external
+id stamped on users and screenings; `region` is authoritative here.
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/` | superadmin | `{code, region, admin_id?}` → `CheckpointView` (status defaults `active`). `CHECKPOINT_EXISTS` (80002). Audit: `checkpoint.created`. |
+| GET | `/` | admin / superadmin | List. Admin sees **own region only**; superadmin sees all (optional `?region=&admin_id=`). Cursor-paginated. |
+| GET | `/:code` | admin / superadmin | One `CheckpointView`. `CHECKPOINT_NOT_FOUND` (80001). |
+| PATCH | `/:code` | superadmin | `{admin_id?, status?}` — `code` / `region` immutable. `INVALID_CHECKPOINT_STATUS` (80003). Audit: `checkpoint.updated`. |
+
+`CheckpointService.Resolve(code) → region` and `RegionExists(region)` back the
+user-create validation above.
+
 ### 4.5 Audit trail (internal)
 
 `audit_logs` is written by services on every state-changing operation
-(`user.created`, `screening.submitted`, `screening.decided`, `blacklist.added`,
-`blacklist.deactivated`) with `old_data`/`new_data` snapshots and the actor's IP.
-**Append-only** — `AuditRepository` exposes `Insert` only. A read API
-(`GET /api/audit-logs`, admin) is a planned addition (§8), not in the current slice.
+(`auth.login`, `user.created`, `user.password_changed`, `user.password_reset`,
+`screening.submitted`, `screening.decided`, `blacklist.added`,
+`blacklist.deactivated`, `checkpoint.created`, `checkpoint.updated`) with
+`old_data`/`new_data` snapshots and the actor's IP. **Append-only** —
+`AuditRepository` exposes `Insert` only. A read API (`GET /api/audit-logs`, admin)
+is a planned addition (§8), not in the current slice.
 
 ---
 
@@ -218,36 +244,44 @@ Entries are deactivated, never deleted.
 
 `internal/screening/` — see `BACKEND_GUIDE.md` §12.
 
-**Contract** (matches `predict_pipeline.py`'s report):
+**Contract** — `passport-model/server.py`, hosted at `https://passport-model.onrender.com`
+(Swagger: `/docs`). This is the default `SCREENING_SERVICE_URL`.
 
 ```
-POST {SCREENING_SERVICE_URL}/predict            multipart/form-data
+POST {SCREENING_SERVICE_URL}/api/v1/verify       multipart/form-data
   image=<file>
-  doc_type=passport | aadhar | auto            (national_id → aadhar; others → auto)
+  doc_type=passport | aadhaar | auto           (national_id → aadhaar; others → auto)
   doc_number=<string>        (optional)
   mrz_line1=<string>         (optional, passports)
   mrz_line2=<string>         (optional, passports)
   header  X-API-Key: {SCREENING_SERVICE_API_KEY}
 
 200 → {
+  "success": true,
+  "filename": "download.jpg",
+  "doc_type": "passport",
   "verdict": "GENUINE" | "SUSPICIOUS" | "FAKE" | "INSUFFICIENT_IMAGE_QUALITY",
   "risk_score": 0.0-1.0,
   "reasons": ["...", "..."],
-  "extracted_fields": { "passport_number": "...", ... },   // optional
-  "evidence_table": { "cnn_score": 0.6, "ela_forensics": {...}, "mrz_checksums": {...}, ... }
+  "evidence_table": { "cnn_score": 0.6, "ela_forensics": {...}, "quality_assessment": {...}, ... }
 }
+
+4xx/5xx → { "success": false, "error": { "code": "MODEL_UNAVAILABLE", "message": "..." } }
 ```
 
-- Transport error / timeout / non-200 → `SCREENING_ENGINE_UNAVAILABLE` (60001·502).
+- No top-level `extracted_fields` today — `ScreenResult.ExtractedFields` stays nil until
+  real OCR lands (Phase D). `predictResponse` still carries the field for forward-compat.
+- Transport error / timeout / non-200 → `SCREENING_ENGINE_UNAVAILABLE` (60001·502); the
+  model's `error.code` is surfaced in the wrapped error.
 - Unparseable body / missing verdict → `SCREENING_ENGINE_BAD_RESPONSE` (60002·502).
 - `SCREENING_ENGINE=mock` swaps in `MockEngine` (deterministic, offline) — the default
   in `docker-compose.yml` so the stack runs with no model attached.
-- Config: `SCREENING_SERVICE_URL`, `SCREENING_SERVICE_API_KEY`,
-  `SCREENING_SERVICE_TIMEOUT` (default 30s).
+- Config: `SCREENING_SERVICE_URL` (default `https://passport-model.onrender.com`),
+  `SCREENING_SERVICE_API_KEY`, `SCREENING_SERVICE_TIMEOUT` (default 60s).
 
-The pipeline currently branches on `passport` / `aadhar`. As the FastAPI wrapper grows
-to cover visa / driving-licence / permit, only `docTypeParam()` in `http_engine.go`
-changes — the rest of the backend already carries all five `DocType`s.
+`server.py` accepts `auto | passport | aadhaar`. As it grows to cover
+visa / driving-licence / permit, only `docTypeParam()` in `http_engine.go` changes —
+the rest of the backend already carries all five `DocType`s.
 
 ---
 
@@ -257,11 +291,12 @@ changes — the rest of the backend already carries all five `DocType`s.
 
 | Range | Domain | Examples |
 |---|---|---|
-| 3xxxx | Users | `USER_NOT_FOUND` 30001·404, `USERNAME_TAKEN` 30002·409, `EMAIL_TAKEN` 30003·409, `INVALID_ROLE` 30004·422 |
+| 3xxxx | Users | `USER_NOT_FOUND` 30001·404, `USERNAME_TAKEN` 30002·409, `EMAIL_TAKEN` 30003·409, `INVALID_ROLE` 30004·422, `INVALID_CURRENT_PASSWORD` 30005·401, `MISSING_SCOPE_FIELD` 30006·422 |
 | 4xxxx | Screenings | `SCREENING_NOT_FOUND` 40001·404, `ALREADY_DECIDED` 40002·409, `INVALID_DOC_TYPE` 40003·422, `SCREENING_NOT_COMPLETED` 40004·409, `INVALID_DECISION` 40005·422 |
 | 5xxxx | Files / storage | `FILE_REQUIRED` 50001·400, `FILE_TOO_LARGE` 50002·413, `INVALID_FILE_TYPE` 50003·422, `STORAGE_FAILED` 50004·500 |
 | 6xxxx | External screening engine | `SCREENING_ENGINE_UNAVAILABLE` 60001·502, `SCREENING_ENGINE_BAD_RESPONSE` 60002·502 |
 | 7xxxx | Blacklist | `BLACKLIST_ENTRY_NOT_FOUND` 70001·404, `BLACKLIST_ENTRY_EXISTS` 70002·409, `INVALID_BLACKLIST_KIND` 70003·422, `BLACKLIST_FIELDS_MISSING` 70004·422 |
+| 8xxxx | Checkpoints | `CHECKPOINT_NOT_FOUND` 80001·404, `CHECKPOINT_EXISTS` 80002·409, `INVALID_CHECKPOINT_STATUS` 80003·422, `UNKNOWN_REGION` 80004·422 |
 
 All in `internal/apperr/apperr.go`'s `ERRORS` — never an inline `&AppError{}` (guide §4).
 
@@ -274,7 +309,6 @@ vertical slice per the guide's checklist.
 
 | Module | Sketch |
 |---|---|
-| **Checkpoints** (`/api/checkpoints`) | Named checkpoint registry so `checkpoint_id` on a screening is a real reference, not a free string. Admin-managed. |
 | **Face Verification** (`/api/screenings/:id/face`, PS Module 4) | Officer captures a live photo; a `FaceEngine` (interface, like `screening.Engine`) compares it to the document portrait; result appended to the screening as `face_verification { score, matched, captured_image_file_id }`. |
 | **Blacklist ↔ screening wiring** | The `/api/blacklist` module is built (§4.4). What's left: call `BlacklistService.Check` inside `ScreeningService.Submit`, add a `flags[]` field to `screenings`, raise `blacklist_hit` + bump `risk_score` on a match, and add an `expired_document` flag from the extracted/entered expiry date. |
 | **Cases** (`/api/cases`) | Group multiple screenings of the same traveller (multiple-identity detection); investigator notes; export. |
