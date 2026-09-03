@@ -140,6 +140,46 @@ func TestScreeningRepository_ListFilters(t *testing.T) {
 	}
 }
 
+func TestScreeningRepository_SetChecks(t *testing.T) {
+	db := testsupport.RequireMongo(t)
+	repo := repository.NewScreeningRepository(db)
+	ctx := context.Background()
+
+	created, err := repo.Create(ctx, newScreening("SCR-CHK"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := created.ID.Hex()
+
+	// Give it an engine result so the reason append has somewhere to land.
+	eng := &model.EngineResult{Verdict: model.VerdictGenuine, RiskScore: 0.1, Reasons: []string{"looks clean"}}
+	if _, err := repo.SetResult(ctx, id, model.StatusCompleted, model.VerdictGenuine, 0.1, eng, ""); err != nil {
+		t.Fatalf("set result: %v", err)
+	}
+
+	matches := []model.BlacklistMatch{{EntryID: "e1", Kind: model.BlacklistDocument, DocNumber: "Z1", Reason: "stolen"}}
+	updated, err := repo.SetChecks(ctx, id, []string{model.FlagBlacklistHit}, matches, 0.35,
+		[]string{"Blacklist hit (document): stolen"})
+	if err != nil {
+		t.Fatalf("set checks: %v", err)
+	}
+	if len(updated.Flags) != 1 || updated.Flags[0] != model.FlagBlacklistHit {
+		t.Fatalf("flags = %v", updated.Flags)
+	}
+	if len(updated.BlacklistMatches) != 1 || updated.BlacklistMatches[0].EntryID != "e1" {
+		t.Fatalf("matches = %+v", updated.BlacklistMatches)
+	}
+	if updated.Risk != 0.35 {
+		t.Fatalf("risk = %v", updated.Risk)
+	}
+	if updated.Engine == nil || len(updated.Engine.Reasons) != 2 {
+		t.Fatalf("engine reasons not appended: %+v", updated.Engine)
+	}
+	if updated.Verdict != model.VerdictGenuine {
+		t.Fatalf("verdict changed to %q", updated.Verdict)
+	}
+}
+
 func TestScreeningRepository_SetDecision_SingleWriter(t *testing.T) {
 	db := testsupport.RequireMongo(t)
 	repo := repository.NewScreeningRepository(db)

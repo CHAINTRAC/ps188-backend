@@ -67,6 +67,26 @@ func (d Decision) Valid() bool {
 	return false
 }
 
+// Advisory screening flags. They surface risk for the officer and never block —
+// the officer still records the decision.
+const (
+	FlagBlacklistHit     = "blacklist_hit"
+	FlagExpiredDocument  = "expired_document"
+	FlagMultipleIdentity = "multiple_identity"
+	FlagFaceMismatch     = "face_mismatch"
+)
+
+// BlacklistMatch is a compact record of one blacklist entry a screening matched,
+// embedded on the screening for the officer's review and the audit trail.
+type BlacklistMatch struct {
+	EntryID   string        `bson:"entry_id" json:"entry_id"`
+	Kind      BlacklistKind `bson:"kind" json:"kind"`
+	DocNumber string        `bson:"doc_number,omitempty" json:"doc_number,omitempty"`
+	Name      string        `bson:"name,omitempty" json:"name,omitempty"`
+	Reason    string        `bson:"reason" json:"reason"`
+	Source    string        `bson:"source,omitempty" json:"source,omitempty"`
+}
+
 // EngineResult is the persisted output of the external screening model.
 // Evidence keeps the engine's full explainability table verbatim.
 type EngineResult struct {
@@ -98,7 +118,8 @@ type Screening struct {
 
 	// Flags are advisory markers raised during screening (e.g. "blacklist_hit",
 	// "expired_document", "face_mismatch"). Never auto-blocking — the officer decides.
-	Flags []string `bson:"flags,omitempty"`
+	Flags            []string         `bson:"flags,omitempty"`
+	BlacklistMatches []BlacklistMatch `bson:"blacklist_matches,omitempty"`
 
 	SubmittedNumber string            `bson:"submitted_number,omitempty"`
 	MRZLine1        string            `bson:"mrz_line1,omitempty"`
@@ -119,22 +140,23 @@ type Screening struct {
 
 // ScreeningView is the API projection.
 type ScreeningView struct {
-	ID              string           `json:"id"`
-	ReferenceNo     string           `json:"reference_no"`
-	CheckpointID    string           `json:"checkpoint_id"`
-	Region          string           `json:"region"`
-	OfficerID       string           `json:"officer_id"`
-	DocType         DocType          `json:"doc_type"`
-	ImageURL        string           `json:"image_url"`
-	Flags           []string         `json:"flags"`
-	Status          ScreeningStatus  `json:"status"`
-	Verdict         Verdict          `json:"verdict"`
-	RiskScore       float64          `json:"risk_score"`
-	Engine          *EngineResult    `json:"engine,omitempty"`
-	FailureReason   string           `json:"failure_reason,omitempty"`
-	OfficerDecision *OfficerDecision `json:"officer_decision,omitempty"`
-	CreatedAt       time.Time        `json:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at"`
+	ID               string           `json:"id"`
+	ReferenceNo      string           `json:"reference_no"`
+	CheckpointID     string           `json:"checkpoint_id"`
+	Region           string           `json:"region"`
+	OfficerID        string           `json:"officer_id"`
+	DocType          DocType          `json:"doc_type"`
+	ImageURL         string           `json:"image_url"`
+	Flags            []string         `json:"flags"`
+	BlacklistMatches []BlacklistMatch `json:"blacklist_matches"`
+	Status           ScreeningStatus  `json:"status"`
+	Verdict          Verdict          `json:"verdict"`
+	RiskScore        float64          `json:"risk_score"`
+	Engine           *EngineResult    `json:"engine,omitempty"`
+	FailureReason    string           `json:"failure_reason,omitempty"`
+	OfficerDecision  *OfficerDecision `json:"officer_decision,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
 }
 
 func (s *Screening) View() ScreeningView {
@@ -142,23 +164,28 @@ func (s *Screening) View() ScreeningView {
 	if flags == nil {
 		flags = []string{}
 	}
+	matches := s.BlacklistMatches
+	if matches == nil {
+		matches = []BlacklistMatch{}
+	}
 	return ScreeningView{
-		ID:              s.ID.Hex(),
-		ReferenceNo:     s.ReferenceNo,
-		CheckpointID:    s.CheckpointID,
-		Region:          s.Region,
-		OfficerID:       s.OfficerID,
-		DocType:         s.DocType,
-		ImageURL:        "/api/screenings/" + s.ID.Hex() + "/image",
-		Flags:           flags,
-		Status:          s.Status,
-		Verdict:         s.Verdict,
-		RiskScore:       s.Risk,
-		Engine:          s.Engine,
-		FailureReason:   s.Failure,
-		OfficerDecision: s.OfficerDecision,
-		CreatedAt:       s.CreatedAt,
-		UpdatedAt:       s.UpdatedAt,
+		ID:               s.ID.Hex(),
+		ReferenceNo:      s.ReferenceNo,
+		CheckpointID:     s.CheckpointID,
+		Region:           s.Region,
+		OfficerID:        s.OfficerID,
+		DocType:          s.DocType,
+		ImageURL:         "/api/screenings/" + s.ID.Hex() + "/image",
+		Flags:            flags,
+		BlacklistMatches: matches,
+		Status:           s.Status,
+		Verdict:          s.Verdict,
+		RiskScore:        s.Risk,
+		Engine:           s.Engine,
+		FailureReason:    s.Failure,
+		OfficerDecision:  s.OfficerDecision,
+		CreatedAt:        s.CreatedAt,
+		UpdatedAt:        s.UpdatedAt,
 	}
 }
 

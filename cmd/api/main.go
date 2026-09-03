@@ -76,8 +76,8 @@ func run(log *slog.Logger) error {
 	checkpointSvc := service.NewCheckpointService(checkpointRepo, auditRepo)
 	authSvc := service.NewAuthService(userRepo, auditRepo, jwtMgr)
 	userSvc := service.NewUserService(userRepo, auditRepo, checkpointSvc)
-	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, storage.NewGridFS(db), engine, log)
 	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo)
+	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, storage.NewGridFS(db), engine, blacklistSvc, log)
 
 	if seeded, err := userSvc.SeedAdmin(ctx, cfg.SuperAdminUsername, cfg.SuperAdminPassword, cfg.SuperAdminEmail); err != nil {
 		return err

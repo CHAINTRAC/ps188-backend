@@ -21,6 +21,14 @@ import (
 	"github.com/sih26/ps188-backend/internal/storage"
 )
 
+// Risk-score bumps applied when a post-engine check raises a flag. The verdict is
+// never changed and the screening never auto-blocks — these only nudge the score
+// the officer sees. Scale is 0.0–1.0.
+const (
+	riskBumpBlacklist = 0.25
+	riskBumpExpired   = 0.15
+)
+
 // SubmitInput is the validated payload for a new screening.
 type SubmitInput struct {
 	OfficerID    string
@@ -31,18 +39,26 @@ type SubmitInput struct {
 	DocNumber    string
 	MRZLine1     string
 	MRZLine2     string
-	ImageName    string
-	Image        []byte
+	// Optional holder details the officer may enter — used for the blacklist
+	// identity check and the expiry check. Missing values fall back to the
+	// engine's extracted fields.
+	HolderName  string
+	DOB         string
+	Nationality string
+	ExpiryDate  string
+	ImageName   string
+	Image       []byte
 }
 
-// ScreeningService orchestrates: store image -> call engine -> persist result,
-// then list/get/decision.
+// ScreeningService orchestrates: store image -> call engine -> blacklist/expiry
+// checks -> persist result, then list/get/decision.
 type ScreeningService struct {
-	repo   repository.ScreeningRepository
-	audit  repository.AuditRepository
-	files  storage.FileStore
-	engine screening.Engine
-	log    *slog.Logger
+	repo      repository.ScreeningRepository
+	audit     repository.AuditRepository
+	files     storage.FileStore
+	engine    screening.Engine
+	blacklist *BlacklistService
+	log       *slog.Logger
 }
 
 func NewScreeningService(
@@ -50,9 +66,10 @@ func NewScreeningService(
 	audit repository.AuditRepository,
 	files storage.FileStore,
 	engine screening.Engine,
+	blacklist *BlacklistService,
 	log *slog.Logger,
 ) *ScreeningService {
-	return &ScreeningService{repo: repo, audit: audit, files: files, engine: engine, log: log}
+	return &ScreeningService{repo: repo, audit: audit, files: files, engine: engine, blacklist: blacklist, log: log}
 }
 
 func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.ScreeningView, error) {
@@ -131,6 +148,25 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 		return zero, err
 	}
 
+	// Post-engine checks: blacklist (document number + identity) and document
+	// expiry. A hit raises an advisory flag and bumps the risk score — it never
+	// changes the verdict or blocks the officer.
+	flags, matches, extraReasons, bump := s.postEngineChecks(ctx, in, result)
+	if len(flags) > 0 {
+		appendReasons := extraReasons
+		if updated.Engine == nil {
+			appendReasons = nil // nothing to append reasons to on a failed engine run
+		}
+		checked, cerr := s.repo.SetChecks(ctx, updated.ID.Hex(), flags, matches,
+			clampRisk(updated.Risk+bump), appendReasons)
+		if cerr != nil {
+			s.log.WarnContext(ctx, "persisting screening checks failed",
+				slog.String("screening_id", updated.ID.Hex()), slog.String("error", cerr.Error()))
+		} else {
+			updated = checked
+		}
+	}
+
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        in.OfficerID,
 		Action:        model.ActionScreeningSubmitted,
@@ -141,11 +177,63 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 			"status":       updated.Status,
 			"verdict":      updated.Verdict,
 			"region":       updated.Region,
+			"flags":        updated.Flags,
 		},
 		IPAddress: in.IP,
 		CreatedAt: time.Now().UTC(),
 	})
 	return updated.View(), nil
+}
+
+// postEngineChecks runs the blacklist and expiry checks and returns the flags,
+// blacklist matches, extra evidence reasons, and the total risk-score bump.
+func (s *ScreeningService) postEngineChecks(ctx context.Context, in SubmitInput, res *screening.ScreenResult) (flags []string, matches []model.BlacklistMatch, reasons []string, bump float64) {
+	var extracted map[string]string
+	if res != nil {
+		extracted = res.ExtractedFields
+	}
+
+	docNumber := pick(in.DocNumber, fieldOf(extracted, "document_number", "passport_number", "doc_number", "id_number"))
+	name := pick(in.HolderName, fieldOf(extracted, "name", "full_name"))
+	if name == "" {
+		surname := fieldOf(extracted, "surname", "last_name")
+		given := fieldOf(extracted, "given_name", "given_names", "first_name")
+		name = strings.TrimSpace(given + " " + surname)
+	}
+	dob := pick(in.DOB, fieldOf(extracted, "date_of_birth", "dob", "birth_date"))
+	nationality := pick(in.Nationality, fieldOf(extracted, "nationality", "country"))
+	expiry := pick(in.ExpiryDate, fieldOf(extracted, "date_of_expiry", "expiry_date", "expiration_date", "expiry"))
+
+	if s.blacklist != nil && (docNumber != "" || name != "") {
+		hit, err := s.blacklist.Check(ctx, model.BlacklistProbe{
+			DocNumber: docNumber, Name: name, DOB: dob, Nationality: nationality,
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "blacklist check failed during screening", slog.String("error", err.Error()))
+		} else if hit.Hit {
+			flags = append(flags, model.FlagBlacklistHit)
+			bump += riskBumpBlacklist
+			for _, m := range hit.Matches {
+				matches = append(matches, model.BlacklistMatch{
+					EntryID:   m.ID,
+					Kind:      m.Kind,
+					DocNumber: m.DocNumber,
+					Name:      m.Name,
+					Reason:    m.Reason,
+					Source:    m.Source,
+				})
+				reasons = append(reasons, "Blacklist hit ("+string(m.Kind)+"): "+m.Reason)
+			}
+		}
+	}
+
+	if t, ok := parseExpiry(expiry); ok && t.Before(startOfUTCDay(time.Now())) {
+		flags = append(flags, model.FlagExpiredDocument)
+		bump += riskBumpExpired
+		reasons = append(reasons, "Document expired on "+t.Format("2006-01-02"))
+	}
+
+	return flags, matches, reasons, bump
 }
 
 func (s *ScreeningService) Get(ctx context.Context, id string) (model.ScreeningView, error) {
@@ -218,4 +306,60 @@ func (s *ScreeningService) Decide(ctx context.Context, id, actorID, ip string, d
 		CreatedAt: time.Now().UTC(),
 	})
 	return updated.View(), nil
+}
+
+// pick returns the first non-blank value.
+func pick(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// fieldOf returns the first non-blank value in m under any of keys.
+func fieldOf(m map[string]string, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// parseExpiry parses a document expiry date in the common formats an officer or
+// the OCR layer might supply (including the MRZ YYMMDD form).
+func parseExpiry(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{
+		"2006-01-02", "2006/01/02", "02-01-2006", "02/01/2006", "02.01.2006",
+		"02 Jan 2006", time.RFC3339, "20060102", "060102",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func startOfUTCDay(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func clampRisk(r float64) float64 {
+	switch {
+	case r > 1:
+		return 1
+	case r < 0:
+		return 0
+	default:
+		return r
+	}
 }

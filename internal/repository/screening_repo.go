@@ -21,6 +21,11 @@ type ScreeningRepository interface {
 	FindByID(ctx context.Context, id string) (*model.Screening, error)
 	List(ctx context.Context, f model.ScreeningFilter, cursor string, limit int64) (response.Page[model.ScreeningView], error)
 	SetResult(ctx context.Context, id string, status model.ScreeningStatus, verdict model.Verdict, risk float64, engine *model.EngineResult, failure string) (*model.Screening, error)
+	// SetChecks records advisory flags, blacklist matches, and an adjusted risk
+	// score raised during post-engine checks, and appends any extra evidence
+	// reasons onto engine.reasons. Additive — never clears the engine result or
+	// the verdict.
+	SetChecks(ctx context.Context, id string, flags []string, matches []model.BlacklistMatch, risk float64, appendReasons []string) (*model.Screening, error)
 	SetDecision(ctx context.Context, id string, d model.OfficerDecision) (*model.Screening, error)
 	// NextSequence returns a gapless per-day counter used to build reference_no.
 	NextSequence(ctx context.Context, day string) (int64, error)
@@ -132,6 +137,26 @@ func (r *mongoScreeningRepo) SetResult(ctx context.Context, id string, status mo
 		set["engine"] = engine
 	}
 	return r.findOneAndUpdate(ctx, oid, bson.M{"$set": set})
+}
+
+func (r *mongoScreeningRepo) SetChecks(ctx context.Context, id string, flags []string, matches []model.BlacklistMatch, risk float64, appendReasons []string) (*model.Screening, error) {
+	oid, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, apperr.ERRORS.ScreeningNotFound
+	}
+	set := bson.M{
+		"flags":      flags,
+		"risk_score": risk,
+		"updated_at": time.Now().UTC(),
+	}
+	if matches != nil {
+		set["blacklist_matches"] = matches
+	}
+	update := bson.M{"$set": set}
+	if len(appendReasons) > 0 {
+		update["$push"] = bson.M{"engine.reasons": bson.M{"$each": appendReasons}}
+	}
+	return r.findOneAndUpdate(ctx, oid, update)
 }
 
 func (r *mongoScreeningRepo) SetDecision(ctx context.Context, id string, d model.OfficerDecision) (*model.Screening, error) {

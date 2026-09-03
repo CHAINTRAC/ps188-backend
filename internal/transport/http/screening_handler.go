@@ -69,6 +69,10 @@ func (h *screeningHandler) submit(c *gin.Context) {
 		DocNumber:    c.PostForm("doc_number"),
 		MRZLine1:     c.PostForm("mrz_line1"),
 		MRZLine2:     c.PostForm("mrz_line2"),
+		HolderName:   c.PostForm("holder_name"),
+		DOB:          c.PostForm("dob"),
+		Nationality:  c.PostForm("nationality"),
+		ExpiryDate:   c.PostForm("expiry_date"),
 		ImageName:    fh.Filename,
 		Image:        data,
 	})

@@ -113,7 +113,11 @@ Planned (see `backend-architecture.md` §8): `cases`,
   "doc_type":       "passport",             // passport | visa | national_id | driving_license | permit
   "image_file_id":  ObjectId,               // GridFS fs.files._id
   "image_name":     "passport_front.jpg",
-  "flags":          ["blacklist_hit"],      // advisory markers (blacklist_hit | expired_document | face_mismatch | …) — never auto-blocking
+  "flags":          ["blacklist_hit", "expired_document"],  // advisory markers — never auto-blocking
+  "blacklist_matches": [                    // present when flags contains "blacklist_hit"
+    { "entry_id": "66d5...", "kind": "document", "doc_number": "Z1234567",
+      "reason": "reported stolen — Interpol SLTD", "source": "Interpol SLTD" }
+  ],
 
   "submitted_number": "Z1234567",           // optional, what the officer typed
   "mrz_line1":        "P<INDDOE<<JANE<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",   // optional
@@ -176,9 +180,15 @@ Planned (see `backend-architecture.md` §8): `cases`,
   verifier to their own `officer_id`, an admin to their own `region`, and a super
   admin to nothing — `middleware.ScopeToActor` overrides any client-supplied
   `officer_id` / `region` query param.
-- **`flags[]` is advisory.** Screening never auto-blocks; flags surface risk for the
-  officer. Populated by follow-up wiring (blacklist hit, expired document, face
-  mismatch).
+- **`flags[]` + `blacklist_matches[]` are advisory.** After the engine call,
+  `ScreeningService.Submit` runs `BlacklistService.Check` (submitted / extracted
+  document number + identity) and an expiry check on the submitted / extracted
+  expiry date. A hit raises `blacklist_hit` (with `blacklist_matches[]` and an
+  appended `engine.reasons` note) and bumps `risk_score` by `0.25`; a past expiry
+  raises `expired_document` and bumps by `0.15` (both clamped to `1.0`). The
+  verdict is **never** changed and the screening **never** auto-blocks — the
+  officer still records the decision. `face_mismatch` / `multiple_identity` are
+  reserved for later modules.
 
 **Indexes:**
 `{reference_no: 1}` unique ·

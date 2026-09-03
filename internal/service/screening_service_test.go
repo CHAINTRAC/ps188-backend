@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sih26/ps188-backend/internal/apperr"
@@ -17,14 +19,26 @@ import (
 
 func newScreeningSvc(t *testing.T, engine screening.Engine) *service.ScreeningService {
 	t.Helper()
+	svc, _ := newScreeningSvcWithBlacklist(t, engine)
+	return svc
+}
+
+func newScreeningSvcWithBlacklist(t *testing.T, engine screening.Engine) (*service.ScreeningService, *service.BlacklistService) {
+	t.Helper()
 	db := testsupport.RequireMongo(t)
-	return service.NewScreeningService(
+	bl := service.NewBlacklistService(
+		repository.NewBlacklistRepository(db),
+		repository.NewAuditRepository(db),
+	)
+	scr := service.NewScreeningService(
 		repository.NewScreeningRepository(db),
 		repository.NewAuditRepository(db),
 		storage.NewGridFS(db),
 		engine,
+		bl,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
+	return scr, bl
 }
 
 var pngPixel = []byte{
@@ -82,6 +96,91 @@ func TestScreeningService_Submit_StampsRegion(t *testing.T) {
 	}
 	if len(got.Data) != 1 || got.Data[0].ID != view.ID {
 		t.Fatalf("region list = %+v", got.Data)
+	}
+}
+
+func TestScreeningService_Submit_BlacklistHit_RaisesFlag(t *testing.T) {
+	svc, bl := newScreeningSvcWithBlacklist(t, &screening.MockEngine{Force: model.VerdictGenuine})
+	ctx := context.Background()
+
+	if _, err := bl.Add(ctx, "admin-1", "127.0.0.1", model.CreateBlacklistInput{
+		Kind:      model.BlacklistDocument,
+		DocNumber: "Z1234567", // matches submitInput().DocNumber
+		Reason:    "reported stolen",
+	}); err != nil {
+		t.Fatalf("seed blacklist: %v", err)
+	}
+
+	view, err := svc.Submit(ctx, submitInput())
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if !slices.Contains(view.Flags, model.FlagBlacklistHit) {
+		t.Fatalf("flags = %v, want blacklist_hit", view.Flags)
+	}
+	if len(view.BlacklistMatches) != 1 || view.BlacklistMatches[0].Reason != "reported stolen" {
+		t.Fatalf("blacklist_matches = %+v", view.BlacklistMatches)
+	}
+	if view.RiskScore <= 0.1 {
+		t.Fatalf("risk_score = %v, expected a bump over the 0.1 engine baseline", view.RiskScore)
+	}
+	// The reason is surfaced on the engine evidence.
+	if view.Engine == nil || !slices.ContainsFunc(view.Engine.Reasons, func(r string) bool {
+		return strings.Contains(r, "Blacklist hit")
+	}) {
+		t.Fatalf("engine reasons missing blacklist note: %+v", view.Engine)
+	}
+
+	// Persisted, not just returned.
+	got, err := svc.Get(ctx, view.ID)
+	if err != nil || !slices.Contains(got.Flags, model.FlagBlacklistHit) {
+		t.Fatalf("get: %v / flags %v", err, got.Flags)
+	}
+}
+
+func TestScreeningService_Submit_Clean_NoFlag(t *testing.T) {
+	svc := newScreeningSvc(t, &screening.MockEngine{Force: model.VerdictGenuine})
+
+	view, err := svc.Submit(context.Background(), submitInput())
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if len(view.Flags) != 0 {
+		t.Fatalf("flags = %v, want none", view.Flags)
+	}
+	if len(view.BlacklistMatches) != 0 {
+		t.Fatalf("blacklist_matches = %+v, want none", view.BlacklistMatches)
+	}
+	if view.RiskScore != 0.1 {
+		t.Fatalf("risk_score = %v, want unchanged 0.1", view.RiskScore)
+	}
+}
+
+func TestScreeningService_Submit_ExpiredDocument_RaisesFlag(t *testing.T) {
+	svc := newScreeningSvc(t, &screening.MockEngine{Force: model.VerdictGenuine})
+
+	in := submitInput()
+	in.ExpiryDate = "2000-01-01"
+	view, err := svc.Submit(context.Background(), in)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if !slices.Contains(view.Flags, model.FlagExpiredDocument) {
+		t.Fatalf("flags = %v, want expired_document", view.Flags)
+	}
+	if view.RiskScore <= 0.1 {
+		t.Fatalf("risk_score = %v, expected an expiry bump", view.RiskScore)
+	}
+
+	// A future expiry date does not flag.
+	in2 := submitInput()
+	in2.ExpiryDate = "2999-12-31"
+	view2, err := svc.Submit(context.Background(), in2)
+	if err != nil {
+		t.Fatalf("submit 2: %v", err)
+	}
+	if len(view2.Flags) != 0 {
+		t.Fatalf("future-expiry flags = %v, want none", view2.Flags)
 	}
 }
 

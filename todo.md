@@ -93,6 +93,62 @@
 
 ---
 
+# Hackathon priority  *(2026-09-03 — internal demo, main requirements first)*
+
+Blacklist + expiry wiring is **done**. OCR lives in `passport-model/`, not
+here. Priority order below is for the demo narrative: verifier submits a doc → sees
+risk / verdict / evidence / flags → decides; admin/superadmin see dashboards, flagged
+cases, audit trail.
+
+**Commit the uncommitted Phase A / Phase C / blacklist-wiring work before starting.**
+
+## P0 — demo blockers (do next)
+- [ ] **Phase K contract fixes** *(XS)* — `risk_score` as int `0–100` in `ScreeningView`
+      (stored `0–1`; UI `RiskGauge` expects `0–100`); add `http://localhost:5173` to
+      `CORS_ALLOW_ORIGINS`; audit `ScreeningView` fields against what the UI reads.
+- [ ] **Audit read API — Phase G core** *(S)* — `AuditRepository.Find(filter, cursor,
+      limit)` (repo stays insert-only otherwise) + `GET /api/audit-logs` (admin = own
+      region, superadmin = org), cursor-paginated, newest first. Logs already written.
+- [ ] **Dashboard summary — Phase E minimal** *(M)* — `GET /api/dashboard/summary`,
+      role-aware: screenings today, verdict split, pending decisions, weekly volume.
+      **Skip "accuracy %"** until its definition is signed off.
+
+## P1 — strong demo value
+- [ ] **Phase H — user management** *(M)* — `GET /api/users?role=&region=&status=`
+      (admin auto-scoped to `verifier` + own region; superadmin lists `admin`) +
+      `PATCH /api/users/:id` (enable/disable, reassign `checkpoint_id`/`region`;
+      role change superadmin-only). Audit `user.updated` / `user.disabled`.
+- [ ] **Cases / multiple-identity detection** *(M)* — link screenings sharing an
+      identity (name+DOB, or same `doc_number` across different holders) → raise the
+      existing `multiple_identity` flag. Named PS requirement.
+- [ ] **Phase D — backend-only parts** *(S)* — document the `risk_score` scale in one
+      place; decide `INSUFFICIENT_IMAGE_QUALITY` handling (own badge vs map to
+      SUSPICIOUS) and flag it for frontend. No model dependency.
+
+## P2 — if time allows
+- [ ] **Face verification — Phase F** — `FaceEngine` iface + `MockFaceEngine` +
+      `POST /api/screenings/:id/face`. Ship mock-only if the face teammates' service
+      isn't ready; wire the real `httpFaceEngine` when it is.
+- [ ] **`GET /api/reports` — Phase E** — doc-type / by-checkpoint breakdowns,
+      fake-detection rate, avg decision time. Summary (P0) already covers the demo.
+- [ ] **Phase D — per-field confidence + evidence tone** — `ExtractedFields` →
+      `[]ExtractedField{Label,Value,Confidence}`, `[]EvidenceItem{Tone,Text}`.
+      Blocked on the `passport-model` response shape (coordinate with teammates).
+
+## P3 — post-hackathon
+- [ ] Presence / online status (Phase I) — last-login stopgap is fine for the demo.
+- [ ] Settings (Phase J) — mostly static policy.
+- [ ] Async screening (worker + `202`).
+- [ ] Port ICAO 9303 + Verhoeff checksums to Go (Python stays the oracle).
+- [ ] `doc_number_hash` at rest; split model into separate deployed services.
+
+## Continuous
+- [ ] `go build ./... && go vet ./... && gofmt -l . && go test ./...` on real Mongo
+      before every commit.
+- [ ] Keep `.env.example` + `docs/backend/*.md` + `README.md` + memory current.
+
+---
+
 ## Pending — not yet built
 
 ### Blacklisting  (PS: "expired or blacklisted travel documents", "multiple identities")
@@ -104,12 +160,27 @@
 - [x] Audit actions — `blacklist.added`, `blacklist.deactivated`
 - [x] Tests — repo (lookup by doc number / identity, case-insensitive, active-only, pagination), service (add → check hit, duplicate rejected, validation, identity check, deactivate clears hit)
 - [x] Docs — `backend-architecture.md` §4.4 full module section, `blacklist` collection added to `database-design.md`
-- [ ] Wire into `ScreeningService.Submit` — on a hit: raise `blacklist_hit` flag on the screening, bump `risk_score`, add a reason; never auto-block (officer still decides)  *(service method ready; needs the Submit call site + `flags[]`)*
-- [ ] Expiry check — flag documents whose extracted/entered expiry date is past (`expired_document` flag)
-- [ ] `screenings` doc: add `flags []string` (e.g. `blacklist_hit`, `expired_document`, `multiple_identity`) + `blacklist_matches []{...}`
+- [x] Wire into `ScreeningService.Submit` (2026-09-03) — after the engine call,
+      `postEngineChecks` runs `BlacklistService.Check` on the submitted/extracted
+      document number + identity. On a hit: `blacklist_hit` flag, `blacklist_matches[]`
+      persisted, `engine.reasons` note appended, `risk_score += 0.25` (clamped). Never
+      auto-blocks. `SubmitInput` gained `HolderName`/`DOB`/`Nationality`/`ExpiryDate`
+      (form fields `holder_name`/`dob`/`nationality`/`expiry_date`); `checkpoint_id`/
+      `region` still from the token. New repo method `ScreeningRepository.SetChecks`.
+- [x] Expiry check (2026-09-03) — `parseExpiry` (ISO / DMY / MRZ YYMMDD forms); a past
+      date raises `expired_document` and bumps `risk_score += 0.15` (clamped).
+- [x] `screenings` doc: `flags []string` + `blacklist_matches []BlacklistMatch`
+      (`{entry_id, kind, doc_number, name, reason, source}`); both surfaced in
+      `ScreeningView` (always emitted, never `null`). `model.Flag*` constants
+      (`blacklist_hit`, `expired_document`, `multiple_identity`, `face_mismatch`).
+- [x] Tests — `screening_service_test.go` (blacklist hit → flag + match + risk bump +
+      reason + persisted; clean → no flag, risk unchanged; expired date → flag, future
+      date → none); `screening_repo_test.go` `SetChecks` (flags/matches/risk/reason
+      append, verdict untouched). *(mongo-backed — skip locally, no Mongo/Docker.)*
+- [x] Docs — `backend-architecture.md` §4.3/§4.4/§5, `database-design.md` §3.
 
 ### Other future modules (sketched in `backend-architecture.md` §8, not started)
-- [ ] Checkpoints registry (`/api/checkpoints`)
+- [x] Checkpoints registry (`/api/checkpoints`) — done in Phase A
 - [ ] Face verification module (PS Module 4) behind a `FaceEngine` interface
 - [ ] Cases — link multiple screenings of the same traveller (multiple-identity detection)
 - [ ] Audit read API (`GET /api/audit-logs`, admin)

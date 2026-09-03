@@ -130,7 +130,7 @@ engine's result + (optionally) an officer's decision.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
+| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `holder_name`, `dob`, `nationality`, `expiry_date`. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5 — includes the post-engine blacklist + expiry checks that populate `flags[]` / `blacklist_matches[]`. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
 | GET | `/` | any authed | List. **Auto-scoped** by `middleware.ScopeToActor`: verifier → own `officer_id` (UI "My History"), admin → own `region`, super admin → unscoped. Extra filters `?verdict=&doc_type=&status=&checkpoint_id=&decided=false&decision=`. Cursor-paginated, newest first. "Flagged for review" (admin dashboard) = `?verdict=SUSPICIOUS` (or `FAKE`) `&decided=false` — no dedicated route. |
 | GET | `/:id` | any authed | Full detail incl. `engine.evidence` (the explainability table) and `engine.reasons`. |
 | GET | `/:id/image` | any authed | Streams the stored document image (from GridFS), `Content-Type` sniffed. |
@@ -151,9 +151,11 @@ Entries are deactivated, never deleted.
 | GET | `/:id` | admin / superadmin | One `BlacklistView`. `BLACKLIST_ENTRY_NOT_FOUND` (70001). |
 | POST | `/:id/deactivate` | admin / superadmin | Flip `active` to `false`. Audit: `blacklist.deactivated`. |
 
-> Wiring `BlacklistService.Check` into the screening `Submit` flow (raise a
-> `blacklist_hit` flag, bump `risk_score`) is a follow-up — the service method is
-> ready; only the `Submit` call site and a `flags[]` field on `screenings` are missing.
+> `BlacklistService.Check` is wired into `ScreeningService.Submit` (§5): after the
+> engine call it probes the submitted / extracted document number and identity. A
+> hit raises the `blacklist_hit` flag, records `blacklist_matches[]`, appends an
+> `engine.reasons` note, and bumps `risk_score` by `0.25`. It never blocks — the
+> officer still decides.
 
 ### 4.6 Checkpoints — `/api/checkpoints`  (all require auth)
 
@@ -212,6 +214,13 @@ is a planned addition (§8), not in the current slice.
         │                         │
         └───────────┬─────────────┘
                     ▼
+        post-engine checks:  BlacklistService.Check(doc_number + identity)
+                             + expiry check on submitted/extracted expiry date
+             on a hit → SetChecks( flags[], blacklist_matches[],
+                        risk_score += 0.25 (blacklist) / 0.15 (expired),
+                        append engine.reasons )   ── verdict unchanged, never blocks
+                    │
+                    ▼
         audit: screening.submitted        ← case is now returned to the officer
                     │
                     ▼
@@ -237,6 +246,10 @@ is a planned addition (§8), not in the current slice.
    `processing`/`failed` it is `PENDING`.
 5. The engine's `evidence_table` is stored **verbatim** as `engine.evidence` — full
    explainability for disputes, never reshaped.
+6. Post-engine checks are **advisory**. A blacklist hit or a past expiry date raises
+   a `flags[]` entry and nudges `risk_score` (clamped to `1.0`) but never changes the
+   `verdict` and never blocks the officer's decision. A blacklist lookup failure is
+   logged and swallowed — the screening still returns.
 
 ---
 
@@ -310,7 +323,6 @@ vertical slice per the guide's checklist.
 | Module | Sketch |
 |---|---|
 | **Face Verification** (`/api/screenings/:id/face`, PS Module 4) | Officer captures a live photo; a `FaceEngine` (interface, like `screening.Engine`) compares it to the document portrait; result appended to the screening as `face_verification { score, matched, captured_image_file_id }`. |
-| **Blacklist ↔ screening wiring** | The `/api/blacklist` module is built (§4.4). What's left: call `BlacklistService.Check` inside `ScreeningService.Submit`, add a `flags[]` field to `screenings`, raise `blacklist_hit` + bump `risk_score` on a match, and add an `expired_document` flag from the extracted/entered expiry date. |
 | **Cases** (`/api/cases`) | Group multiple screenings of the same traveller (multiple-identity detection); investigator notes; export. |
 | **Audit read API** (`GET /api/audit-logs`, admin) | Paginated, filters `?action=&reference_type=&reference_id=`. Repo stays `Insert`-only; a `Find` method is additive. |
 | **Dashboard** (`/api/dashboard/summary`) | Aggregate counts (screenings today, by verdict, pending decisions, engine failures 24h) — single aggregation queries. |
