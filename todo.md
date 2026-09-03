@@ -315,3 +315,77 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
       endpoints, decision enum, error domains (add `7xxxx` checkpoints, `8xxxx` face)
 - [ ] `.env.example` — new `FACE_*`, `SUPERADMIN_*`, `PRESENCE_WINDOW` keys
 - [ ] Update memory `ps188-backend-stack.md` — 3 roles + regions, decision enum change
+
+---
+
+# Verification architecture — POC scope calls  *(`docs/PS188_VERIFICATION_ARCHITECTURE.md`)*
+
+We are following `docs/PS188_VERIFICATION_ARCHITECTURE.md`. For the SIH POC (demo, not
+production-efficient) the items below are **deliberately deferred** — each is a real
+improvement the doc describes, none is needed to demo Passport + Aadhaar end-to-end.
+Revisit after the happy path runs through the UI.
+
+> "The model" = **`passport-model/`** (FastAPI `server.py` + `Dockerfile` + `render.yaml`,
+> deploys to Render / Singapore) — NOT the older `Al-Based-Fake-Identity-Document-Screening-System/`.
+> The `predict_pipeline.py` / `indian_passport_verifier.py` / `aadhaar_verifier.py`
+> files are byte-identical between the two; `passport-model/` is the one with the HTTP
+> server and is what `SCREENING_SERVICE_URL` points at.
+
+## Do first — `httpEngine` ↔ `passport-model/server.py` contract mismatches
+*(blocks every real, non-mock screening — small fixes)*
+- [ ] `screening/http_engine.go` — POSTs to `{url}/predict`; the server serves
+      `POST /api/v1/verify`. Align the path.
+- [ ] `screening/http_engine.go` `docTypeParam()` — sends `doc_type=aadhar`; the server
+      only accepts `auto | passport | aadhaar`. Send `aadhaar`.
+- [ ] Response envelope — server returns `{success, verdict, risk_score, reasons,
+      evidence_table}` (no top-level `extracted_fields`). `predictResponse` decodes the
+      known keys fine and leaves `extracted_fields` nil — OK for the POC; real OCR
+      fields land in Phase D.
+
+## Deferred to post-POC
+
+### Keep the deterministic checks in Python — don't port to Go yet  *(doc §3 / §9)*
+- [ ] Doc moves ICAO 9303 + Verhoeff + format regex into the Go backend. `passport-model`
+      already runs all of it and emits `verdict` + `evidence_table`; the Go backend
+      stores `evidence_table` verbatim today (`engine.evidence` is `bson.M`). Port to Go
+      later, using the Python as a test oracle (run both, assert equal) — checksum bugs
+      are silent.
+- [ ] Doc §2 "strip the model service to CNN + ELA only" — deferred with the above;
+      `passport-model` keeps running the full pipeline for now.
+
+### Evidence aggregator / weighted risk score in Go  *(doc §4 step 6, §9 phase 6)*
+- [ ] Doc wants the backend to combine validation + tampering + face + blacklist into a
+      weighted `risk_score` and verdict band. Biggest new build. For the POC,
+      `passport-model` keeps producing the verdict/band and Go passes it through.
+      Blacklist stays **additive** — a `blacklist_hit` flag, not folded into the score.
+
+### Split OCR / tampering / face into separate deployed services  *(doc §2 / §3)*
+- [ ] Doc shows three independent services. For the POC keep them as modules/routes in
+      the one `passport-model` FastAPI process (ideally one `POST /verify` returning
+      ocr + cnn + ela + face). The architectural boundary is the response contract, not
+      process isolation — split later only if it matters.
+- [ ] Backend parallel fan-out (doc §4 step 2) — deferred with the split. A single
+      sequential chain (model → validation → blacklist → aggregate) is enough for one
+      verifier screening one document and far easier to debug. (The doc's "3 parallel
+      calls" also has a hidden dependency: the face service needs the doc face crop /
+      `face_bbox` from OCR output.)
+
+### `verification_records` collection  *(doc §6)*
+- [ ] Don't add it. `screenings` (full case) + `audit_logs` (append-only) already hold
+      everything it lists (`checkpoint_id`, `verifier_id`, `verdict`, `risk_score`,
+      `timestamp`). A third collection is drift.
+
+### `doc_number_hash` at rest  *(doc §6)*
+- [ ] Nice privacy hardening. `submitted_number` is stored plaintext today and that's
+      fine for a POC. Post-SIH.
+
+### Face-match liveness / anti-spoofing  *(doc §5 `live_capture_liveness_ok`)*
+- [ ] Real liveness is a research problem. Phase F does plain embedding cosine
+      similarity (doc face crop vs webcam capture), `match = score ≥ threshold`, no
+      liveness. Mark liveness explicitly out of scope in the architecture doc.
+
+### Visa / Driving License / Permit  *(doc §7 / §8)*
+- [ ] Deferred until Passport + Aadhaar run end-to-end. Visa reuses the passport MRZ
+      7-3-1 checksum math; DL is format-regex + blacklist only (no check digit); Permit
+      needs a sample document before any work. Backend already carries all five
+      `DocType` values, so this is model-side + validation work, not schema work.
