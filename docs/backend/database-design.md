@@ -125,15 +125,21 @@ Planned (see `backend-architecture.md` §8): `cases`,
 
   "status":         "completed",            // processing | completed | failed
   "verdict":        "SUSPICIOUS",           // GENUINE | SUSPICIOUS | FAKE | INSUFFICIENT_IMAGE_QUALITY | PENDING
-  "risk_score":     0.42,                   // 0.0–1.0, mirrors engine.risk_score
+  "risk_score":     0.42,                   // STORED 0.0–1.0 — API projections convert to 0–100
   "failure_reason": "",                     // set only when status == failed
 
-  "engine": {                               // the external model's output, stored verbatim
+  "engine": {                               // the external model's output
     "verdict":     "SUSPICIOUS",
-    "risk_score":  0.42,
+    "risk_score":  0.42,                    // stored 0.0–1.0
     "reasons":     ["MRZ checksum uncertain", "Elevated ELA compression variance"],
-    "extracted_fields": { "passport_number": "Z1234567", "surname": "DOE", "given_name": "JANE" },
-    "evidence": {                           // predict_pipeline.py's evidence_table, unmodified
+    "extracted_fields": [                   // []ExtractedField — per-field OCR confidence
+      { "label": "document_number", "value": "Z1234567", "confidence": 0.97 },
+      { "label": "surname", "value": "DOE", "confidence": 0.9 }
+    ],
+    "evidence_items": [                      // []EvidenceItem — toned lines for the UI (json key: "evidence")
+      { "tone": "warn", "text": "MRZ checksum uncertain" }
+    ],
+    "evidence": {                           // RawEvidence — predict_pipeline.py's evidence_table, unmodified (json key: "raw_evidence")
       "quality_assessment": { "is_sufficient": true, "blur_score": 142.7 },
       "cnn_score": 0.61,
       "ela_forensics": { "ela_variance": 210.4 },
@@ -155,10 +161,18 @@ Planned (see `backend-architecture.md` §8): `cases`,
 
 ### Design decisions
 
-- **Engine output nested, not flattened.** `engine.evidence` is the model's
-  `evidence_table` stored exactly as received — full explainability for disputes and
-  intelligence analysis. The top-level `verdict` / `risk_score` are denormalised copies
-  for cheap filtering and indexing.
+- **Engine output nested, not flattened.** `engine.evidence` (`RawEvidence`) is the
+  model's `evidence_table` stored exactly as received — full explainability for
+  disputes. `engine.extracted_fields` (`[]ExtractedField` with per-field confidence)
+  and `engine.evidence_items` (`[]EvidenceItem` with `good|warn|bad` tone) are the
+  structured forms the UI renders; when the model omits them the backend derives
+  `evidence_items` from `reasons` + risk band and leaves `extracted_fields` empty.
+  The top-level `verdict` / `risk_score` are denormalised copies for cheap filtering.
+- **Risk score: stored `0.0–1.0`, served `0–100`.** Every document keeps the model's
+  native float. `model.riskTo100` (the single conversion point) turns it into an
+  integer `0–100` in `ScreeningView` and `EngineView` — what the UI `RiskGauge` and
+  history expect. `verdict_band` (`Verdict.Band()`) is also exposed for 3-state UI
+  controls; `INSUFFICIENT_IMAGE_QUALITY` / `PENDING` band to `SUSPICIOUS`.
 - **`verdict: "PENDING"`** while `status` is `processing` or `failed` — the document
   always has a `verdict` field, so list filters never have to special-case its absence.
 - **Engine failure is a persisted state, not a lost request.** `status: "failed"` +

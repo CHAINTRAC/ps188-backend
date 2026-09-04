@@ -49,8 +49,71 @@ func TestHTTPEngine_Screen_OK(t *testing.T) {
 	if res.Verdict != model.VerdictSuspicious || res.RiskScore != 0.42 {
 		t.Fatalf("bad result: %+v", res)
 	}
-	if res.Evidence["cnn_score"] != 0.6 {
-		t.Fatalf("evidence not passed through: %+v", res.Evidence)
+	if res.RawEvidence["cnn_score"] != 0.6 {
+		t.Fatalf("raw evidence_table not passed through: %+v", res.RawEvidence)
+	}
+	// The model sent no toned evidence, so it is derived from reasons + risk.
+	if len(res.EvidenceItems) != 1 || res.EvidenceItems[0].Text != "MRZ checksum uncertain" {
+		t.Fatalf("derived evidence = %+v", res.EvidenceItems)
+	}
+	if res.EvidenceItems[0].Tone != model.EvidenceWarn { // risk 0.42 → warn band
+		t.Fatalf("derived tone = %q, want warn", res.EvidenceItems[0].Tone)
+	}
+}
+
+func TestHTTPEngine_Screen_StructuredFieldsAndTone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"success":true,"verdict":"GENUINE","risk_score":0.05,
+			"reasons":["all checks passed"],
+			"extracted_fields":[
+				{"label":"document_number","value":"Z1234567","confidence":0.97},
+				{"label":"surname","value":"DOE","confidence":0.9}
+			],
+			"evidence":[{"tone":"good","text":"MRZ checksums valid"}],
+			"evidence_table":{"cnn_score":0.1}
+		}`))
+	}))
+	defer srv.Close()
+
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	res, err := eng.Screen(context.Background(), screening.ScreenRequest{
+		DocType: model.DocPassport, Filename: "p.jpg", Image: []byte{0xff, 0xd8, 0xff},
+	})
+	if err != nil {
+		t.Fatalf("screen: %v", err)
+	}
+	if len(res.ExtractedFields) != 2 || res.ExtractedFields[0].Label != "document_number" ||
+		res.ExtractedFields[0].Confidence != 0.97 {
+		t.Fatalf("extracted_fields = %+v", res.ExtractedFields)
+	}
+	// The model supplied its own toned evidence — passed through, not derived.
+	if len(res.EvidenceItems) != 1 || res.EvidenceItems[0].Tone != model.EvidenceGood ||
+		res.EvidenceItems[0].Text != "MRZ checksums valid" {
+		t.Fatalf("evidence not passed through: %+v", res.EvidenceItems)
+	}
+}
+
+func TestHTTPEngine_Screen_FlatExtractedFieldsMap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"success":true,"verdict":"GENUINE","risk_score":0.05,
+			"extracted_fields":{"surname":"DOE","document_number":"Z1"}
+		}`))
+	}))
+	defer srv.Close()
+
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	res, err := eng.Screen(context.Background(), screening.ScreenRequest{
+		DocType: model.DocPassport, Filename: "p.jpg", Image: []byte{0xff, 0xd8, 0xff},
+	})
+	if err != nil {
+		t.Fatalf("screen: %v", err)
+	}
+	if len(res.ExtractedFields) != 2 || res.ExtractedFields[0].Label != "document_number" {
+		t.Fatalf("flat map not normalised (sorted by label): %+v", res.ExtractedFields)
 	}
 }
 

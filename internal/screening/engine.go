@@ -19,14 +19,18 @@ type ScreenRequest struct {
 	Image     []byte
 }
 
-// ScreenResult mirrors the FastAPI /predict response.
+// ScreenResult mirrors the FastAPI verify response. RiskScore stays on the
+// model's native 0.0–1.0 scale; the API layer converts to 0–100.
 type ScreenResult struct {
 	Verdict         model.Verdict
 	RiskScore       float64
 	Reasons         []string
-	ExtractedFields map[string]string
-	// Evidence is the engine's full explainability table, stored verbatim.
-	Evidence map[string]any
+	ExtractedFields []model.ExtractedField
+	// EvidenceItems is the toned explainability list for the UI — supplied by the
+	// model when it can, otherwise derived from Reasons + RiskScore.
+	EvidenceItems []model.EvidenceItem
+	// RawEvidence is the engine's full explainability table, stored verbatim.
+	RawEvidence map[string]any
 }
 
 // Engine screens one document image. Implementations must return an

@@ -39,20 +39,22 @@ func (m *MockEngine) Screen(_ context.Context, req ScreenRequest) (*ScreenResult
 		}
 	}
 
-	fields := map[string]string{}
+	var fields []model.ExtractedField
 	if req.DocNumber != "" {
-		fields["document_number"] = req.DocNumber
+		fields = append(fields, model.ExtractedField{Label: "document_number", Value: req.DocNumber, Confidence: 0.98})
 	}
 	if req.MRZLine1 != "" {
-		fields["mrz_line1"] = req.MRZLine1
+		fields = append(fields, model.ExtractedField{Label: "mrz_line1", Value: req.MRZLine1, Confidence: 0.9})
 	}
 
+	reasons := []string{"mock screening engine — result derived from image bytes"}
 	return &ScreenResult{
 		Verdict:         verdict,
 		RiskScore:       risk,
-		Reasons:         []string{"mock screening engine — result derived from image bytes"},
+		Reasons:         reasons,
 		ExtractedFields: fields,
-		Evidence: map[string]any{
+		EvidenceItems:   DeriveEvidence(reasons, risk),
+		RawEvidence: map[string]any{
 			"engine":             "mock",
 			"cnn_score":          0.5,
 			"ela_variance":       120.0,

@@ -139,7 +139,8 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 			RiskScore:       result.RiskScore,
 			Reasons:         result.Reasons,
 			ExtractedFields: result.ExtractedFields,
-			Evidence:        bson.M(result.Evidence),
+			Evidence:        result.EvidenceItems,
+			RawEvidence:     bson.M(result.RawEvidence),
 		}
 		updated, err = s.repo.SetResult(ctx, sc.ID.Hex(),
 			model.StatusCompleted, result.Verdict, result.RiskScore, eng, "")
@@ -188,21 +189,21 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 // postEngineChecks runs the blacklist and expiry checks and returns the flags,
 // blacklist matches, extra evidence reasons, and the total risk-score bump.
 func (s *ScreeningService) postEngineChecks(ctx context.Context, in SubmitInput, res *screening.ScreenResult) (flags []string, matches []model.BlacklistMatch, reasons []string, bump float64) {
-	var extracted map[string]string
+	var extracted []model.ExtractedField
 	if res != nil {
 		extracted = res.ExtractedFields
 	}
 
-	docNumber := pick(in.DocNumber, fieldOf(extracted, "document_number", "passport_number", "doc_number", "id_number"))
-	name := pick(in.HolderName, fieldOf(extracted, "name", "full_name"))
+	docNumber := pick(in.DocNumber, extractedValue(extracted, "document_number", "passport_number", "doc_number", "id_number"))
+	name := pick(in.HolderName, extractedValue(extracted, "name", "full_name"))
 	if name == "" {
-		surname := fieldOf(extracted, "surname", "last_name")
-		given := fieldOf(extracted, "given_name", "given_names", "first_name")
+		surname := extractedValue(extracted, "surname", "last_name")
+		given := extractedValue(extracted, "given_name", "given_names", "first_name")
 		name = strings.TrimSpace(given + " " + surname)
 	}
-	dob := pick(in.DOB, fieldOf(extracted, "date_of_birth", "dob", "birth_date"))
-	nationality := pick(in.Nationality, fieldOf(extracted, "nationality", "country"))
-	expiry := pick(in.ExpiryDate, fieldOf(extracted, "date_of_expiry", "expiry_date", "expiration_date", "expiry"))
+	dob := pick(in.DOB, extractedValue(extracted, "date_of_birth", "dob", "birth_date"))
+	nationality := pick(in.Nationality, extractedValue(extracted, "nationality", "country"))
+	expiry := pick(in.ExpiryDate, extractedValue(extracted, "date_of_expiry", "expiry_date", "expiration_date", "expiry"))
 
 	if s.blacklist != nil && (docNumber != "" || name != "") {
 		hit, err := s.blacklist.Check(ctx, model.BlacklistProbe{
@@ -318,12 +319,15 @@ func pick(vals ...string) string {
 	return ""
 }
 
-// fieldOf returns the first non-blank value in m under any of keys.
-func fieldOf(m map[string]string, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			if s := strings.TrimSpace(v); s != "" {
-				return s
+// extractedValue returns the first non-blank value among the OCR fields whose
+// label case-insensitively matches any of labels.
+func extractedValue(fields []model.ExtractedField, labels ...string) string {
+	for _, want := range labels {
+		for _, f := range fields {
+			if strings.EqualFold(strings.TrimSpace(f.Label), want) {
+				if s := strings.TrimSpace(f.Value); s != "" {
+					return s
+				}
 			}
 		}
 	}

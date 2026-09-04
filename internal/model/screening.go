@@ -39,6 +39,21 @@ const (
 	VerdictPending      Verdict = "PENDING" // set while status == processing/failed
 )
 
+// Band collapses a verdict to the three states a UI control that only knows
+// genuine / suspicious / fake can render. INSUFFICIENT_IMAGE_QUALITY and PENDING
+// map to SUSPICIOUS — both mean "a human still needs to look". The frontend
+// SHOULD show INSUFFICIENT_IMAGE_QUALITY as its own "retake photo" badge when it
+// has one and fall back to the SUSPICIOUS styling otherwise (see ScreeningView
+// which exposes both `verdict` and `verdict_band`).
+func (v Verdict) Band() Verdict {
+	switch v {
+	case VerdictGenuine, VerdictFake:
+		return v
+	default:
+		return VerdictSuspicious
+	}
+}
+
 // ScreeningStatus tracks the async lifecycle of a case.
 type ScreeningStatus string
 
@@ -87,14 +102,89 @@ type BlacklistMatch struct {
 	Source    string        `bson:"source,omitempty" json:"source,omitempty"`
 }
 
+// Evidence tone — the UI colour-codes each explainability line.
+const (
+	EvidenceGood = "good"
+	EvidenceWarn = "warn"
+	EvidenceBad  = "bad"
+)
+
+// ExtractedField is one OCR'd document field with a per-field confidence
+// (0.0–1.0; 0 means the engine gave no confidence). The UI renders a badge per
+// row.
+type ExtractedField struct {
+	Label      string  `bson:"label" json:"label"`
+	Value      string  `bson:"value" json:"value"`
+	Confidence float64 `bson:"confidence" json:"confidence"`
+}
+
+// EvidenceItem is one toned explainability line for the UI evidence panel.
+type EvidenceItem struct {
+	Tone string `bson:"tone" json:"tone"` // good | warn | bad
+	Text string `bson:"text" json:"text"`
+}
+
 // EngineResult is the persisted output of the external screening model.
-// Evidence keeps the engine's full explainability table verbatim.
+// RiskScore is stored on the model's native 0.0–1.0 scale — every API projection
+// converts to an integer 0–100 (see riskTo100). RawEvidence keeps the engine's
+// full explainability table verbatim as a fallback when structured Evidence /
+// ExtractedFields are absent.
 type EngineResult struct {
-	Verdict         Verdict           `bson:"verdict" json:"verdict"`
-	RiskScore       float64           `bson:"risk_score" json:"risk_score"`
-	Reasons         []string          `bson:"reasons" json:"reasons"`
-	ExtractedFields map[string]string `bson:"extracted_fields" json:"extracted_fields"`
-	Evidence        bson.M            `bson:"evidence" json:"evidence"`
+	Verdict         Verdict          `bson:"verdict" json:"verdict"`
+	RiskScore       float64          `bson:"risk_score" json:"risk_score"`
+	Reasons         []string         `bson:"reasons" json:"reasons"`
+	ExtractedFields []ExtractedField `bson:"extracted_fields" json:"extracted_fields"`
+	Evidence        []EvidenceItem   `bson:"evidence_items" json:"evidence"`
+	RawEvidence     bson.M           `bson:"evidence" json:"raw_evidence,omitempty"`
+}
+
+// EngineView is the API projection of an engine result: risk on the 0–100 scale
+// and never-null slices.
+type EngineView struct {
+	Verdict         Verdict          `json:"verdict"`
+	VerdictBand     Verdict          `json:"verdict_band"`
+	RiskScore       int              `json:"risk_score"` // 0–100
+	Reasons         []string         `json:"reasons"`
+	ExtractedFields []ExtractedField `json:"extracted_fields"`
+	Evidence        []EvidenceItem   `json:"evidence"`
+	RawEvidence     bson.M           `json:"raw_evidence,omitempty"`
+}
+
+func (e *EngineResult) View() EngineView {
+	reasons := e.Reasons
+	if reasons == nil {
+		reasons = []string{}
+	}
+	fields := e.ExtractedFields
+	if fields == nil {
+		fields = []ExtractedField{}
+	}
+	evidence := e.Evidence
+	if evidence == nil {
+		evidence = []EvidenceItem{}
+	}
+	return EngineView{
+		Verdict:         e.Verdict,
+		VerdictBand:     e.Verdict.Band(),
+		RiskScore:       riskTo100(e.RiskScore),
+		Reasons:         reasons,
+		ExtractedFields: fields,
+		Evidence:        evidence,
+		RawEvidence:     e.RawEvidence,
+	}
+}
+
+// riskTo100 converts the stored 0.0–1.0 risk score to the integer 0–100 scale
+// every client (UI RiskGauge, history list) expects. This is the one place the
+// conversion lives.
+func riskTo100(f float64) int {
+	if f <= 0 {
+		return 0
+	}
+	if f >= 1 {
+		return 100
+	}
+	return int(f*100 + 0.5)
 }
 
 // OfficerDecision is embedded once, when an officer records their call.
@@ -138,7 +228,9 @@ type Screening struct {
 	UpdatedAt time.Time `bson:"updated_at"`
 }
 
-// ScreeningView is the API projection.
+// ScreeningView is the API projection. RiskScore is an integer 0–100 (converted
+// from the stored 0.0–1.0). `verdict` is the engine's raw conclusion;
+// `verdict_band` collapses it to genuine/suspicious/fake for simple UI controls.
 type ScreeningView struct {
 	ID               string           `json:"id"`
 	ReferenceNo      string           `json:"reference_no"`
@@ -151,8 +243,9 @@ type ScreeningView struct {
 	BlacklistMatches []BlacklistMatch `json:"blacklist_matches"`
 	Status           ScreeningStatus  `json:"status"`
 	Verdict          Verdict          `json:"verdict"`
-	RiskScore        float64          `json:"risk_score"`
-	Engine           *EngineResult    `json:"engine,omitempty"`
+	VerdictBand      Verdict          `json:"verdict_band"`
+	RiskScore        int              `json:"risk_score"` // 0–100
+	Engine           *EngineView      `json:"engine,omitempty"`
 	FailureReason    string           `json:"failure_reason,omitempty"`
 	OfficerDecision  *OfficerDecision `json:"officer_decision,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
@@ -168,6 +261,11 @@ func (s *Screening) View() ScreeningView {
 	if matches == nil {
 		matches = []BlacklistMatch{}
 	}
+	var engine *EngineView
+	if s.Engine != nil {
+		v := s.Engine.View()
+		engine = &v
+	}
 	return ScreeningView{
 		ID:               s.ID.Hex(),
 		ReferenceNo:      s.ReferenceNo,
@@ -180,8 +278,9 @@ func (s *Screening) View() ScreeningView {
 		BlacklistMatches: matches,
 		Status:           s.Status,
 		Verdict:          s.Verdict,
-		RiskScore:        s.Risk,
-		Engine:           s.Engine,
+		VerdictBand:      s.Verdict.Band(),
+		RiskScore:        riskTo100(s.Risk),
+		Engine:           engine,
 		FailureReason:    s.Failure,
 		OfficerDecision:  s.OfficerDecision,
 		CreatedAt:        s.CreatedAt,

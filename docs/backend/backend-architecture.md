@@ -276,14 +276,30 @@ POST {SCREENING_SERVICE_URL}/api/v1/verify       multipart/form-data
   "verdict": "GENUINE" | "SUSPICIOUS" | "FAKE" | "INSUFFICIENT_IMAGE_QUALITY",
   "risk_score": 0.0-1.0,
   "reasons": ["...", "..."],
+  "extracted_fields": [ {"label":"document_number","value":"Z1234567","confidence":0.97}, ... ],  (optional)
+  "evidence": [ {"tone":"good|warn|bad","text":"..."}, ... ],                                     (optional)
   "evidence_table": { "cnn_score": 0.6, "ela_forensics": {...}, "quality_assessment": {...}, ... }
 }
 
 4xx/5xx → { "success": false, "error": { "code": "MODEL_UNAVAILABLE", "message": "..." } }
 ```
 
-- No top-level `extracted_fields` today — `ScreenResult.ExtractedFields` stays nil until
-  real OCR lands (Phase D). `predictResponse` still carries the field for forward-compat.
+- **`extracted_fields`** (Phase D) — `[]ExtractedField{Label, Value, Confidence}`.
+  `parseExtractedFields` also accepts a plain `{label: value}` object (sorted by
+  label). Absent → `nil`; the raw `evidence_table` is always kept verbatim as
+  `EngineResult.RawEvidence` (`json:"raw_evidence"`).
+- **`evidence`** (Phase D) — `[]EvidenceItem{Tone, Text}` for the UI panel. If the
+  model omits it, `DeriveEvidence` builds one line per `reason` toned by the risk
+  band (`≥0.66` bad · `≥0.33` warn · else good). `reasons []string` is kept as-is.
+- **Risk-score scale** — the model's `0.0–1.0` is stored verbatim (`Screening.risk_score`,
+  `engine.risk_score`). **Every API projection converts to an integer `0–100`** via
+  the single `model.riskTo100` — `ScreeningView.risk_score` and `EngineView.risk_score`
+  are `0–100`. `RiskGauge` / history in the UI consume the `0–100` form directly.
+- **`INSUFFICIENT_IMAGE_QUALITY`** stays a first-class `verdict`. `ScreeningView`
+  also exposes `verdict_band` (`Verdict.Band()` — collapses INSUFFICIENT and PENDING
+  to `SUSPICIOUS`) for UI controls that only render genuine/suspicious/fake. Frontend
+  SHOULD give INSUFFICIENT its own "retake photo" badge and fall back to the band
+  otherwise. *(flagged for frontend)*
 - Transport error / timeout / non-200 → `SCREENING_ENGINE_UNAVAILABLE` (60001·502); the
   model's `error.code` is surfaced in the wrapped error.
 - Unparseable body / missing verdict → `SCREENING_ENGINE_BAD_RESPONSE` (60002·502).

@@ -471,8 +471,9 @@ type Engine interface {
 - **`http_engine.go`** — the real client. `POST {baseURL}/api/v1/verify` as
   `multipart/form-data` (`image`, `doc_type` ∈ `auto|passport|aadhaar`, `doc_number`,
   `mrz_line1`, `mrz_line2`), header `X-API-Key`. Response JSON: `{success, filename,
-  doc_type, verdict, risk_score, reasons[], evidence_table{}}` — served by
-  `passport-model/server.py` (hosted at `https://passport-model.onrender.com`).
+  doc_type, verdict, risk_score, reasons[], extracted_fields[]?, evidence[]?,
+  evidence_table{}}` — served by `passport-model/server.py` (hosted at
+  `https://passport-model.onrender.com`).
   Any transport error / non-200 / timeout → `ERRORS.ScreeningEngineUnavailable.Wrap(...)`
   (the model's `{error:{code,message}}` envelope is surfaced in the wrapped error).
   Unparseable body / empty verdict → `ERRORS.ScreeningEngineBadResponse`.
@@ -482,8 +483,12 @@ type Engine interface {
 - `main` picks the impl from `cfg.ScreeningEngine`; everything downstream depends on the
   `Engine` **interface**.
 
-`ScreenResult.Evidence` (`map[string]any`) is stored verbatim on the screening document
-as `engine.evidence` — full explainability, never reshaped.
+`ScreenResult.RawEvidence` (`map[string]any`) is stored verbatim as `engine.evidence`
+— full explainability, never reshaped. `ExtractedFields []ExtractedField` (per-field
+OCR confidence) and `EvidenceItems []EvidenceItem` (`good|warn|bad` tone) are the
+structured forms the UI reads; `DeriveEvidence(reasons, risk)` fills the toned list
+when the model omits it. `risk_score` is stored `0.0–1.0` and converted to an integer
+`0–100` by `model.riskTo100` in every API projection (`ScreeningView`, `EngineView`).
 
 ---
 

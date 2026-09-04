@@ -103,9 +103,9 @@ cases, audit trail.
 **Commit the uncommitted Phase A / Phase C / blacklist-wiring work before starting.**
 
 ## P0 — demo blockers (do next)
-- [ ] **Phase K contract fixes** *(XS)* — `risk_score` as int `0–100` in `ScreeningView`
-      (stored `0–1`; UI `RiskGauge` expects `0–100`); add `http://localhost:5173` to
-      `CORS_ALLOW_ORIGINS`; audit `ScreeningView` fields against what the UI reads.
+- [ ] **Phase K contract fixes** *(XS)* — ~~`risk_score` as int `0–100`~~ **done in Phase D**;
+      still to do: add `http://localhost:5173` to `CORS_ALLOW_ORIGINS`; audit
+      `ScreeningView` fields against what the UI reads.
 - [ ] **Audit read API — Phase G core** *(S)* — `AuditRepository.Find(filter, cursor,
       limit)` (repo stays insert-only otherwise) + `GET /api/audit-logs` (admin = own
       region, superadmin = org), cursor-paginated, newest first. Logs already written.
@@ -121,9 +121,10 @@ cases, audit trail.
 - [ ] **Cases / multiple-identity detection** *(M)* — link screenings sharing an
       identity (name+DOB, or same `doc_number` across different holders) → raise the
       existing `multiple_identity` flag. Named PS requirement.
-- [ ] **Phase D — backend-only parts** *(S)* — document the `risk_score` scale in one
-      place; decide `INSUFFICIENT_IMAGE_QUALITY` handling (own badge vs map to
-      SUSPICIOUS) and flag it for frontend. No model dependency.
+- [x] **Phase D — backend-only parts** *(done 2026-09-04)* — `risk_score` 0–100 via
+      `model.riskTo100`; `INSUFFICIENT_IMAGE_QUALITY` kept + `verdict_band` added +
+      flagged for frontend; structured `extracted_fields[]` / `evidence[]` with a
+      derivation fallback. See Phase D section below.
 
 ## P2 — if time allows
 - [ ] **Face verification — Phase F** — `FaceEngine` iface + `MockFaceEngine` +
@@ -131,9 +132,10 @@ cases, audit trail.
       isn't ready; wire the real `httpFaceEngine` when it is.
 - [ ] **`GET /api/reports` — Phase E** — doc-type / by-checkpoint breakdowns,
       fake-detection rate, avg decision time. Summary (P0) already covers the demo.
-- [ ] **Phase D — per-field confidence + evidence tone** — `ExtractedFields` →
-      `[]ExtractedField{Label,Value,Confidence}`, `[]EvidenceItem{Tone,Text}`.
-      Blocked on the `passport-model` response shape (coordinate with teammates).
+- [x] **Phase D — per-field confidence + evidence tone** *(done 2026-09-04)* — types
+      landed (`[]ExtractedField`, `[]EvidenceItem`), backend consumes them when the
+      model sends them and derives the tone otherwise. Only the `passport-model` side
+      actually emitting them is still open (see Phase D deferred).
 
 ## P3 — post-hackathon
 - [ ] Presence / online status (Phase I) — last-login stopgap is fine for the demo.
@@ -287,20 +289,36 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 - [x] Docs — `backend-architecture.md` §4.3, `database-design.md` §3 (doc shape,
       `region`/`flags`, indexes, scoping note).
 
-## Phase D — OCR fields, evidence tone, risk scale  *(coordinate with the FastAPI model)*
-- [ ] Per-field confidence — `EngineResult.ExtractedFields` becomes
-      `[]ExtractedField{ Label, Value, Confidence float64 }` (UI renders a confidence
-      badge per row). Update `predictResponse` parsing + `screening/engine.go` contract
-      + `backend-architecture.md` §6. Fallback: keep the raw `evidence_table` verbatim.
-- [ ] Evidence tone — add `[]EvidenceItem{ Tone: good|warn|bad, Text string }` to
-      `EngineResult`. Prefer the model to supply tone; if not, derive in `http_engine`
-      from `reasons` + `risk_score` bands. Keep `reasons []string` and raw `evidence`.
-- [ ] Risk score scale — model emits `0.0–1.0`; UI `RiskGauge` and history show `0–100`.
-      Store as-is, expose `risk_score` in `ScreeningView` as an int `0–100`. Document
-      the convention in one place.
-- [ ] `INSUFFICIENT_IMAGE_QUALITY` verdict — UI has no state for it; decide a UI
-      treatment (show as its own badge / map to SUSPICIOUS). Flag for frontend.
-- [ ] Tests — `http_engine_test.go` for the new response shape + tone passthrough.
+## Phase D — OCR fields, evidence tone, risk scale  *(done 2026-09-04)*
+- [x] Per-field confidence — `EngineResult.ExtractedFields` is now
+      `[]model.ExtractedField{ Label, Value, Confidence float64 }`. `http_engine`
+      `parseExtractedFields` accepts the structured array **or** a flat `{label:value}`
+      map (sorted by label); absent → nil, raw `evidence_table` always kept as
+      `EngineResult.RawEvidence` (`json:"raw_evidence"`). `mock_engine` emits structured
+      fields. `screening/engine.go` `ScreenResult` updated; `screening_service` blacklist/
+      expiry checks read fields via `extractedValue(fields, labels…)`.
+- [x] Evidence tone — `EngineResult.Evidence []model.EvidenceItem{ Tone, Text }`
+      (`good|warn|bad` consts `model.EvidenceGood/Warn/Bad`), json key `evidence`.
+      `http_engine` prefers the model's `evidence[]`; otherwise
+      `screening.DeriveEvidence(reasons, risk)` — one line per reason toned by risk band
+      (`≥0.66` bad · `≥0.33` warn · else good). `reasons []string` + `RawEvidence` kept.
+- [x] Risk score scale — stored `0.0–1.0` verbatim everywhere; `model.riskTo100` (single
+      conversion point) → integer `0–100` in `ScreeningView.risk_score` and the new
+      `EngineView.risk_score`. `ScreeningView.Engine` is now `*EngineView` (never-null
+      slices, 0–100 risk).
+- [x] `INSUFFICIENT_IMAGE_QUALITY` — kept as a first-class `verdict`. Added
+      `Verdict.Band()` (→ genuine/suspicious/fake; INSUFFICIENT + PENDING → SUSPICIOUS)
+      and `verdict_band` on `ScreeningView` + `EngineView`. **Frontend:** render
+      INSUFFICIENT as its own "retake photo" badge, fall back to `verdict_band` styling.
+- [x] Tests — `http_engine_test.go` (derived tone, structured `extracted_fields` +
+      model-supplied tone passthrough, flat-map normalisation); `model/screening_view_test.go`
+      (`Verdict.Band`, `riskTo100` rounding, `EngineView`, never-null slices);
+      `screening_service_test.go` updated to the 0–100 scale.
+- [x] Docs — `backend-architecture.md` §6, `database-design.md` §3, `BACKEND_GUIDE.md` §12.
+
+### Phase D — deferred (needs the `passport-model` response shape, coordinate with teammates)
+- [ ] The model actually emitting per-field `confidence` and its own `evidence` tone
+      (backend already consumes both when present; derivation is the fallback).
 
 ## Phase E — Dashboard & reports aggregation  *(all new endpoints)*
 - [ ] Define **"accuracy"** — the UI shows team/verifier/system accuracy %. Proposed:
@@ -424,7 +442,7 @@ Revisit after the happy path runs through the UI.
 - [x] `screening/http_engine.go` — path aligned to `POST /api/v1/verify`.
 - [x] `screening/http_engine.go` `docTypeParam()` — `national_id` → `aadhaar` (was `aadhar`).
 - [x] Response envelope — `predictResponse` carries `success/filename/doc_type` too;
-      `extracted_fields` stays nil (no top-level field from the server) until Phase D.
+      `extracted_fields` / `evidence` parsed when present (Phase D, done 2026-09-04).
       `{error:{code,message}}` failure envelope is parsed and surfaced in the wrapped error.
 - [x] Config defaults — `SCREENING_ENGINE=http`,
       `SCREENING_SERVICE_URL=https://passport-model.onrender.com`,

@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,14 +43,19 @@ func NewHTTPEngine(baseURL, apiKey string, timeout time.Duration) Engine {
 }
 
 type predictResponse struct {
-	Success         bool              `json:"success"`
-	Filename        string            `json:"filename"`
-	DocType         string            `json:"doc_type"`
-	Verdict         string            `json:"verdict"`
-	RiskScore       float64           `json:"risk_score"`
-	Reasons         []string          `json:"reasons"`
-	ExtractedFields map[string]string `json:"extracted_fields"` // not sent today — real OCR fields land in Phase D
-	EvidenceTable   map[string]any    `json:"evidence_table"`
+	Success   bool     `json:"success"`
+	Filename  string   `json:"filename"`
+	DocType   string   `json:"doc_type"`
+	Verdict   string   `json:"verdict"`
+	RiskScore float64  `json:"risk_score"`
+	Reasons   []string `json:"reasons"`
+	// ExtractedFields accepts either the structured form
+	// [{label,value,confidence}, …] or a plain {label: value} map — see
+	// parseExtractedFields. Absent today; real OCR fields arrive with Phase D.
+	ExtractedFields json.RawMessage `json:"extracted_fields"`
+	// Evidence, when the model supplies it, is the toned list [{tone,text}, …].
+	Evidence      []model.EvidenceItem `json:"evidence"`
+	EvidenceTable map[string]any       `json:"evidence_table"`
 }
 
 // errorResponse is the model's failure envelope: {"success":false,"error":{"code","message"}}.
@@ -100,13 +106,57 @@ func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResu
 	if verdict == "" {
 		return nil, apperr.ERRORS.ScreeningEngineBadResponse.Wrap(fmt.Errorf("empty verdict"))
 	}
+
+	// Prefer the model's own toned evidence; derive it from reasons + risk when
+	// the model does not supply one.
+	evidence := pr.Evidence
+	if len(evidence) == 0 {
+		evidence = DeriveEvidence(pr.Reasons, pr.RiskScore)
+	}
+
 	return &ScreenResult{
 		Verdict:         verdict,
 		RiskScore:       pr.RiskScore,
 		Reasons:         pr.Reasons,
-		ExtractedFields: pr.ExtractedFields,
-		Evidence:        pr.EvidenceTable,
+		ExtractedFields: parseExtractedFields(pr.ExtractedFields),
+		EvidenceItems:   evidence,
+		RawEvidence:     pr.EvidenceTable,
 	}, nil
+}
+
+// parseExtractedFields accepts either [{label,value,confidence}, …] or a plain
+// {label: value} object and normalises both to []model.ExtractedField. An
+// unrecognised or empty payload yields nil — the caller falls back to the raw
+// evidence_table.
+func parseExtractedFields(raw json.RawMessage) []model.ExtractedField {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var structured []model.ExtractedField
+	if err := json.Unmarshal(raw, &structured); err == nil && len(structured) > 0 {
+		out := structured[:0]
+		for _, f := range structured {
+			if strings.TrimSpace(f.Label) == "" {
+				continue
+			}
+			out = append(out, f)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	var flat map[string]string
+	if err := json.Unmarshal(raw, &flat); err == nil && len(flat) > 0 {
+		out := make([]model.ExtractedField, 0, len(flat))
+		for k, v := range flat {
+			out = append(out, model.ExtractedField{Label: k, Value: v})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+		return out
+	}
+	return nil
 }
 
 func buildMultipart(req ScreenRequest) (io.Reader, string, error) {

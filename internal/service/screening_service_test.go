@@ -121,8 +121,8 @@ func TestScreeningService_Submit_BlacklistHit_RaisesFlag(t *testing.T) {
 	if len(view.BlacklistMatches) != 1 || view.BlacklistMatches[0].Reason != "reported stolen" {
 		t.Fatalf("blacklist_matches = %+v", view.BlacklistMatches)
 	}
-	if view.RiskScore <= 0.1 {
-		t.Fatalf("risk_score = %v, expected a bump over the 0.1 engine baseline", view.RiskScore)
+	if view.RiskScore <= 10 { // 0.10 engine baseline → 10/100
+		t.Fatalf("risk_score = %v, expected a bump over the 10/100 engine baseline", view.RiskScore)
 	}
 	// The reason is surfaced on the engine evidence.
 	if view.Engine == nil || !slices.ContainsFunc(view.Engine.Reasons, func(r string) bool {
@@ -151,8 +151,8 @@ func TestScreeningService_Submit_Clean_NoFlag(t *testing.T) {
 	if len(view.BlacklistMatches) != 0 {
 		t.Fatalf("blacklist_matches = %+v, want none", view.BlacklistMatches)
 	}
-	if view.RiskScore != 0.1 {
-		t.Fatalf("risk_score = %v, want unchanged 0.1", view.RiskScore)
+	if view.RiskScore != 10 {
+		t.Fatalf("risk_score = %v, want unchanged 10/100", view.RiskScore)
 	}
 }
 
@@ -168,7 +168,7 @@ func TestScreeningService_Submit_ExpiredDocument_RaisesFlag(t *testing.T) {
 	if !slices.Contains(view.Flags, model.FlagExpiredDocument) {
 		t.Fatalf("flags = %v, want expired_document", view.Flags)
 	}
-	if view.RiskScore <= 0.1 {
+	if view.RiskScore <= 10 {
 		t.Fatalf("risk_score = %v, expected an expiry bump", view.RiskScore)
 	}
 
