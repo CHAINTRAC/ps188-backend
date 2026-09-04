@@ -81,7 +81,7 @@ internal/model          User, Checkpoint, Screening, Blacklist, AuditLog (+ View
 internal/repository     User / Checkpoint / Screening / Blacklist / Audit repositories
 internal/service        Auth / User / Checkpoint / Screening / Blacklist services
 internal/screening      Engine iface + httpEngine + MockEngine   ← external model client
-internal/storage        FileStore iface + GridFS impl            ← document images
+internal/storage        FileStore iface + local-disk / GridFS impls ← document images
 internal/platform/jwt   token Manager
 internal/transport/http router + auth/user/screening handlers
 internal/testsupport    RequireMongo(t)
@@ -133,7 +133,7 @@ engine's result + (optionally) an officer's decision.
 | POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `holder_name`, `dob`, `nationality`, `expiry_date`. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5 — includes the post-engine blacklist + expiry checks that populate `flags[]` / `blacklist_matches[]`. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
 | GET | `/` | any authed | List. **Auto-scoped** by `middleware.ScopeToActor`: verifier → own `officer_id` (UI "My History"), admin → own `region`, super admin → unscoped. Extra filters `?verdict=&doc_type=&status=&checkpoint_id=&decided=false&decision=`. Cursor-paginated, newest first. "Flagged for review" (admin dashboard) = `?verdict=SUSPICIOUS` (or `FAKE`) `&decided=false` — no dedicated route. |
 | GET | `/:id` | any authed | Full detail incl. `engine.evidence` (the explainability table) and `engine.reasons`. |
-| GET | `/:id/image` | any authed | Streams the stored document image (from GridFS), `Content-Type` sniffed. |
+| GET | `/:id/image` | any authed | Streams the stored document image (via `FileStore` — local disk by default, GridFS if configured), `Content-Type` sniffed. |
 | POST | `/:id/decision` | verifier | Record the officer's manual call: `{decision: accept\|escalate\|reject, reason}` (names match the UI). Exactly one per screening — a second call → `ALREADY_DECIDED` (40002). Not allowed while `status=processing` → `SCREENING_NOT_COMPLETED` (40004). Audit: `screening.decided` (`new_data.detail` = `screening.decided · ACCEPT\|ESCALATE\|REJECT`). |
 
 ### 4.4 Blacklist — `/api/blacklist`  (all require auth)
@@ -193,7 +193,7 @@ is a planned addition (§8), not in the current slice.
      ┌─ validate doc_type, file type & size ─┐  → 4xx / 5xx, nothing stored
                     │
                     ▼
-        store image in GridFS  →  image_file_id
+        store image via FileStore (local disk by default, or GridFS)  →  image_file_id
                     │
         allocate reference_no  =  SCR-<yyyymmdd>-<00001>   (gapless per-day counter)
                     │
@@ -351,7 +351,7 @@ vertical slice per the guide's checklist.
 | Layer | Type | Stubs | Priority scenarios |
 |---|---|---|---|
 | Repositories | real MongoDB (`RequireMongo`) | none | create+find, not-found mapping, cursor pagination across pages, `SetDecision` conditional-write race, `NextSequence` monotonicity |
-| Services | real repos + real GridFS | `screening.MockEngine` only | `Submit` → completed (verdict/risk/reference persisted); `Submit` with engine down → `status=failed` persisted, request still succeeds; `INVALID_DOC_TYPE`; `Decide` once → then `ALREADY_DECIDED`; `INVALID_DECISION`; auth login success / wrong-password / unknown-user indistinguishable / refresh |
+| Services | real repos + a real `FileStore` (local, rooted at `t.TempDir()`) | `screening.MockEngine` only | `Submit` → completed (verdict/risk/reference persisted); `Submit` with engine down → `status=failed` persisted, request still succeeds; `INVALID_DOC_TYPE`; `Decide` once → then `ALREADY_DECIDED`; `INVALID_DECISION`; auth login success / wrong-password / unknown-user indistinguishable / refresh |
 | Engine client | `httptest.Server` | the server itself | happy path (verdict + evidence passthrough), non-200 → `UNAVAILABLE`, bad JSON → `BAD_RESPONSE`, API-key header sent |
 
 No test mocks a repository or a service. MongoDB comes from `docker compose up`.
@@ -363,8 +363,9 @@ No test mocks a repository or a service. MongoDB comes from `docker compose up`.
 1. **Skeleton** — config, apperr, response, logger, jwt, database + `EnsureIndexes`,
    middleware, `main.go`, Docker. *(done)*
 2. **Auth + Users** — login, refresh, RBAC, admin-seeded accounts. *(done)*
-3. **Screenings vertical slice** — model → repo → service → handlers: submit (GridFS +
-   engine call + persist), list, get, image, decision; audit logging. *(done)*
+3. **Screenings vertical slice** — model → repo → service → handlers: submit (local
+   disk / GridFS + engine call + persist), list, get, image, decision; audit logging.
+   *(done)*
 4. **Three-role model** — `verifier` / `admin` / `superadmin`; admin routes accept
    admin + superadmin; bootstrap seed is a superadmin. *(done)*
 5. **Blacklist** module — document/identity entries, admin CRUD + deactivate, verifier

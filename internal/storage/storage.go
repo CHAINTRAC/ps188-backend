@@ -1,6 +1,9 @@
-// Package storage abstracts binary blob storage for document images. The default
-// implementation is GridFS (gridfs.go) so images live in the same MongoDB and no
-// shared filesystem volume is needed; an S3 impl can satisfy the same interface.
+// Package storage abstracts binary blob storage for document images.
+// STORAGE_DRIVER selects the implementation: "local" (local.go — plain files on
+// disk, the current default) or "gridfs" (gridfs.go — same MongoDB, no shared
+// filesystem volume needed). Both hand out bson.ObjectID hex ids so they're
+// interchangeable without touching callers; an S3 impl can satisfy the same
+// interface later.
 package storage
 
 import (

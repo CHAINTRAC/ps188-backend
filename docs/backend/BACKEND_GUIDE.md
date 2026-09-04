@@ -69,7 +69,8 @@ internal/
 │   └── mock_engine.go           # deterministic offline stub (SCREENING_ENGINE=mock)
 ├── storage/
 │   ├── storage.go               # FileStore interface (Put/Get/Delete)
-│   └── gridfs.go                # GridFS impl — images live in the same MongoDB
+│   ├── local.go                 # local-disk impl (STORAGE_DRIVER=local, current default)
+│   └── gridfs.go                # GridFS impl (STORAGE_DRIVER=gridfs) — same MongoDB
 ├── platform/jwt/jwt.go          # Manager: CreateAccess/Refresh, DecodeAccess/Refresh; TokenData
 ├── validate/validate.go         # BindJSON(c, dst) — the one place bodies are bound
 ├── transport/http/
@@ -506,8 +507,12 @@ err = database.EnsureIndexes(ctx, db)                                 // idempot
   `primitive.ObjectID` (that's v1).
 - `EnsureIndexes` is the single place indexes are declared — `coll.Indexes().CreateMany(ctx, []mongo.IndexModel{...})`,
   each with `options.Index().SetName(...)`. See `database-design.md` §Indexes for the list.
-- Document images are stored in **GridFS** (`db.GridFSBucket()`, `storage.NewGridFS(db)`)
-  — same database, no shared filesystem volume, survives multi-replica.
+- Document images: `STORAGE_DRIVER=local` (default) writes plain files under
+  `LOCAL_STORAGE_DIR`; `STORAGE_DRIVER=gridfs` keeps them in **GridFS**
+  (`db.GridFSBucket()`, `storage.NewGridFS(db)`) instead — same database, no shared
+  filesystem volume, survives multi-replica. Both hand out `bson.ObjectID` hex ids,
+  so `Screening.ImageFileID` and everything downstream is unaffected by which one
+  is wired in `main.go`.
 - No ORM, no migration tool. Schema is enforced by the Go structs + these indexes.
 
 ---
@@ -557,13 +562,15 @@ func TestScreeningRepository_SetDecision_SingleWriter(t *testing.T) {
 
 ### Service tests — `*_service_test.go`, package `service_test`
 
-Real repositories + real GridFS + `screening.MockEngine`. Assert on outcomes and the
-persisted state, not on which internal calls happened.
+Real repositories + a real `FileStore` (local, rooted at `t.TempDir()` — self-cleans)
++ `screening.MockEngine`. Assert on outcomes and the persisted state, not on which
+internal calls happened.
 
 ```go
+files, _ := storage.NewLocalFileStore(t.TempDir())
 svc := service.NewScreeningService(
     repository.NewScreeningRepository(db), repository.NewAuditRepository(db),
-    storage.NewGridFS(db), &screening.MockEngine{Force: model.VerdictSuspicious},
+    files, &screening.MockEngine{Force: model.VerdictSuspicious}, blacklistSvc,
     slog.New(slog.NewTextHandler(io.Discard, nil)),
 )
 ```
@@ -628,7 +635,7 @@ Static binary, distroless, non-root. `.dockerignore` excludes `docs`, `.env*`, `
 | `internal/repository` | all Mongo queries, interfaces + impls | business rules, JWT, bcrypt, HTTP |
 | `internal/service` | business logic, orchestration, audit writes | `gin`, SQL/Mongo queries, `req`/`res` |
 | `internal/screening` | external model client (iface + http + mock) | DB, HTTP server code |
-| `internal/storage` | `FileStore` iface + GridFS impl | business logic |
+| `internal/storage` | `FileStore` iface + local-disk / GridFS impls | business logic |
 | `internal/middleware` | reusable Gin middleware | business logic |
 | `internal/transport/http` | handlers, router, route table | SQL/Mongo, bcrypt, JWT signing |
 | `internal/platform/jwt` | token create/verify, `TokenData` | DB, HTTP |

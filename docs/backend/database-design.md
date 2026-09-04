@@ -3,8 +3,12 @@
 Data model for the PS188 AI-Based Fake Identity & Document Screening System.
 
 **One MongoDB database** (`MONGO_DB`, default `ps188`), single deployment, role-based
-access — no multi-tenancy. Document images are stored in **GridFS** inside the same
-database. Schema is enforced by the Go structs in `internal/model/` plus the indexes
+access — no multi-tenancy. Document images are stored via the `storage.FileStore`
+interface: **local disk** (`STORAGE_DRIVER=local`, the current default — plain files
+under `LOCAL_STORAGE_DIR`) or **GridFS** in the same database
+(`STORAGE_DRIVER=gridfs`); either way the id handed back is a `bson.ObjectID` hex
+string, so `screenings.image_file_id` and everything downstream don't care which is
+wired in. Schema is enforced by the Go structs in `internal/model/` plus the indexes
 in `internal/database/mongo.go` (`EnsureIndexes`) — there is no ORM and no migration
 tool.
 
@@ -23,7 +27,7 @@ Companion: `backend-architecture.md` (modules, endpoints, lifecycle),
 | `blacklist` | Blacklisted document numbers and identities | `BlacklistRepository` |
 | `audit_logs` | Append-only trail of every state-changing action | `AuditRepository` (Insert only) |
 | `counters` | Atomic per-day sequence for `screenings.reference_no` | `ScreeningRepository.NextSequence` |
-| `fs.files` / `fs.chunks` | GridFS — stored document images | `storage.gridFSStore` |
+| `fs.files` / `fs.chunks` | GridFS — stored document images (only when `STORAGE_DRIVER=gridfs`; local disk is the default — see §7) | `storage.gridFSStore` |
 
 Planned (see `backend-architecture.md` §8): `cases`,
 `face_verifications` (or embedded), `internal_notifications`.
@@ -111,7 +115,7 @@ Planned (see `backend-architecture.md` §8): `cases`,
   "officer_id":     "66d4...",              // users._id hex of the submitter
 
   "doc_type":       "passport",             // passport | visa | national_id | driving_license | permit
-  "image_file_id":  ObjectId,               // GridFS fs.files._id
+  "image_file_id":  ObjectId,               // FileStore blob id — local-disk filename or GridFS fs.files._id
   "image_name":     "passport_front.jpg",
   "flags":          ["blacklist_hit", "expired_document"],  // advisory markers — never auto-blocking
   "blacklist_matches": [                    // present when flags contains "blacklist_hit"
@@ -186,8 +190,13 @@ Planned (see `backend-architecture.md` §8): `cases`,
 - **`officer_id` / `decided_by` are hex strings, not `ObjectId` refs.** They come out of
   the JWT as strings; no `$lookup` is done on the hot path. `users` is small — join in
   the app if a screening list ever needs officer names.
-- **Images in GridFS.** Same database as everything else → one backup, one connection,
-  no shared-volume problem across replicas. `image_file_id` is the `fs.files._id`.
+- **Images behind `FileStore`, id-compatible either way.** Default is local disk
+  (`STORAGE_DRIVER=local`) — simplest for a single-instance deploy, no GridFS chunk
+  overhead. `STORAGE_DRIVER=gridfs` keeps them in the same database instead → one
+  backup, one connection, no shared-volume problem across replicas. Both hand out a
+  `bson.ObjectID` hex as the blob id, stored as `image_file_id` — switching drivers
+  needs no schema change (existing blobs under the old driver just aren't reachable
+  until migrated).
 
 - **`region` denormalised, not looked up.** Copied from the officer's checkpoint
   (carried on the JWT) when the screening is created. The list endpoint scopes a
@@ -305,19 +314,32 @@ submissions never get the same one.
 
 ---
 
-## 7. GridFS — `fs.files` / `fs.chunks`
+## 7. Document image storage — `FileStore`
 
-Default bucket (`db.GridFSBucket()`), managed entirely by `internal/storage/gridfs.go`:
+`internal/storage.FileStore` (`Put`/`Get`/`Delete`) is the one interface both
+implementations satisfy; `main.go` picks one from `STORAGE_DRIVER`.
 
-- `Put(ctx, filename, reader) → hex id` — `UploadFromStream`.
-- `Get(ctx, id, writer)` — `DownloadToStream`.
-- `Delete(ctx, id)` — `Delete`; a missing file is not an error (used to roll back a
-  half-created screening).
+**Local disk (`STORAGE_DRIVER=local`, default)** — `internal/storage/local.go`:
+- `Put` mints a `bson.NewObjectID().Hex()` id and writes the blob to
+  `<LOCAL_STORAGE_DIR>/<id>` (flat directory, no extension — content-type is
+  sniffed on read, not inferred from a filename).
+- `Get` / `Delete` open/remove that path; a missing file on `Delete` is not an
+  error (used to roll back a half-created screening).
+- `LOCAL_STORAGE_DIR` defaults to `./data/uploads`, created on boot if missing.
+  Gitignored (`/data/`); the Dockerfile creates it `chown`ed to the distroless
+  `nonroot` user and `docker-compose.yml` mounts a named volume
+  (`ps188_uploads:/app/data/uploads`) so images survive container restarts.
 
-Only JPEG and PNG are accepted (`http.DetectContentType` check in the handler), capped
-at `MAX_UPLOAD_BYTES` (default 10 MiB). The screening document keeps the `fs.files._id`
-in `image_file_id`; `GET /api/screenings/:id/image` streams it back with a sniffed
-`Content-Type`.
+**GridFS (`STORAGE_DRIVER=gridfs`)** — `internal/storage/gridfs.go`, default bucket
+(`db.GridFSBucket()`) in the same database:
+- `Put` → `UploadFromStream`, `Get` → `DownloadToStream`, `Delete` → `Delete`
+  (missing file likewise not an error).
+- Backed by `fs.files` / `fs.chunks` — no explicit index needed beyond `_id`.
+
+Either way: only JPEG and PNG are accepted (`http.DetectContentType` check in the
+handler), capped at `MAX_UPLOAD_BYTES` (default 10 MiB). The screening document
+keeps the returned id in `image_file_id`; `GET /api/screenings/:id/image` streams
+it back with a sniffed `Content-Type`.
 
 ---
 
@@ -351,7 +373,7 @@ users (1) ────< screenings.officer_id            (hex string, not a DB r
 users (1) ────< screenings.officer_decision.decided_by
 users (1) ────< blacklist.added_by
 users (1) ────< audit_logs.user_id
-screenings (1) ──1 fs.files                       via image_file_id (GridFS)
+screenings (1) ──1 blob in FileStore               via image_file_id (local disk file, or fs.files if STORAGE_DRIVER=gridfs)
 screenings (1) ──< audit_logs                     via reference_type="screening" + reference_id
 counters (1 per day) ──< screenings               via reference_no allocation (no stored ref)
 ```

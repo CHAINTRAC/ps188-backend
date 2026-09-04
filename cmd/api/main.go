@@ -71,13 +71,27 @@ func run(log *slog.Logger) error {
 		log.Info("screening engine: http", slog.String("url", cfg.ScreeningServiceURL))
 	}
 
+	// Document image storage.
+	var fileStore storage.FileStore
+	switch cfg.StorageDriver {
+	case "gridfs":
+		fileStore = storage.NewGridFS(db)
+		log.Info("file storage: gridfs")
+	default:
+		fileStore, err = storage.NewLocalFileStore(cfg.LocalStorageDir)
+		if err != nil {
+			return err
+		}
+		log.Info("file storage: local", slog.String("dir", cfg.LocalStorageDir))
+	}
+
 	// JWT + services.
 	jwtMgr := jwt.NewManager(cfg.JWTSecret, cfg.JWTRefreshSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	checkpointSvc := service.NewCheckpointService(checkpointRepo, auditRepo)
 	authSvc := service.NewAuthService(userRepo, auditRepo, jwtMgr)
 	userSvc := service.NewUserService(userRepo, auditRepo, checkpointSvc)
 	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo)
-	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, storage.NewGridFS(db), engine, blacklistSvc, log)
+	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, fileStore, engine, blacklistSvc, log)
 
 	if seeded, err := userSvc.SeedAdmin(ctx, cfg.SuperAdminUsername, cfg.SuperAdminPassword, cfg.SuperAdminEmail); err != nil {
 		return err

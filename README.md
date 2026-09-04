@@ -36,6 +36,10 @@ docker compose up --build
   Set `SCREENING_ENGINE=mock` to run the stack offline with a deterministic stub.
 - First boot seeds a super admin: `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD`
   (`admin` / `admin12345`; legacy `ADMIN_*` names still read as a fallback).
+- `STORAGE_DRIVER=local` by default — document images are written as plain files
+  under `LOCAL_STORAGE_DIR` (`./data/uploads`; a named Docker volume keeps them
+  across container restarts). Set `STORAGE_DRIVER=gridfs` to keep them in MongoDB
+  instead.
 
 ```bash
 curl localhost:8080/health
@@ -92,7 +96,7 @@ internal/model      User, Checkpoint, Screening, BlacklistEntry, AuditLog
 internal/repository Mongo data access (interfaces + impls)
 internal/service    business logic (auth, users, checkpoints, screening orchestration)
 internal/screening  external FastAPI model client (http + mock)
-internal/storage    GridFS document-image store
+internal/storage    document-image store (local disk by default, or GridFS)
 internal/transport/http  Gin router + handlers
 internal/middleware auth, error, cors, rate-limit, request log
 internal/platform/jwt    token manager

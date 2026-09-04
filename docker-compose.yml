@@ -44,6 +44,11 @@ services:
       # Container-network overrides only.
       MONGO_URI: mongodb://ps188_app:ps188_app@mongo:27017/ps188?authSource=ps188
       APP_ENV: development
+    volumes:
+      # STORAGE_DRIVER=local (default) writes document images to LOCAL_STORAGE_DIR
+      # (./data/uploads, resolved inside the container as /app/data/uploads) — keep
+      # them across container restarts/rebuilds. Irrelevant when STORAGE_DRIVER=gridfs.
+      - ps188_uploads:/app/data/uploads
     logging:
       driver: json-file
       options:
@@ -52,3 +57,4 @@ services:
 
 volumes:
   ps188_mongo_data:
+  ps188_uploads:

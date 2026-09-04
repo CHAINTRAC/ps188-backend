@@ -13,6 +13,9 @@ coverage.*
 .gotmp/
 .testbin/
 
+# local document image storage (STORAGE_DRIVER=local — see LOCAL_STORAGE_DIR)
+/data/
+
 # editor / OS
 .DS_Store
 .idea/

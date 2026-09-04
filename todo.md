@@ -36,6 +36,20 @@
 ## Storage
 - [x] `storage/storage.go` — `FileStore` interface (Put / Get / Delete)
 - [x] `storage/gridfs.go` — GridFS implementation (document images in the same MongoDB)
+- [x] `storage/local.go` (2026-09-04) — local-disk `FileStore`; mints a
+      `bson.ObjectID` hex id (same shape GridFS handed out, so `Screening.ImageFileID`
+      round-trips unchanged) and writes to `<LOCAL_STORAGE_DIR>/<id>`. `STORAGE_DRIVER`
+      config (`local` default | `gridfs`) selects the impl in `main.go`. `.env.*`,
+      `.gitignore` (`/data/`), `.dockerignore` updated. `Dockerfile` creates
+      `/app/data/uploads` `chown`ed to the distroless `nonroot` user (no shell at
+      runtime to mkdir); `docker-compose.yml` mounts a named volume
+      (`ps188_uploads:/app/data/uploads`) so uploads survive restarts. Service tests
+      (`screening_service_test.go`) switched from GridFS to a `t.TempDir()`-rooted
+      local store — now exercise the production-default path with automatic cleanup.
+      New `storage/local_test.go` (put/get/delete round-trip, id is a valid ObjectID
+      hex, delete-missing is a no-op, base dir auto-created).
+      Docs — `BACKEND_GUIDE.md` §storage/§13/testing, `backend-architecture.md` §3/§9,
+      `database-design.md` §1/§3/§7/§9, `README.md`.
 
 ## Services (business logic)
 - [x] `service/auth_service.go` — login (bcrypt 12, indistinguishable unknown-user), refresh

@@ -40,6 +40,11 @@ type Config struct {
 	ScreeningServiceURL string
 	ScreeningAPIKey     string
 	ScreeningTimeout    time.Duration
+
+	// Document image storage. "local" writes plain files under LocalStorageDir
+	// (the current default); "gridfs" keeps them in the same MongoDB instead.
+	StorageDriver   string // local | gridfs
+	LocalStorageDir string
 }
 
 // Load reads .env.<ENV>.local (if present) then the process environment.
@@ -73,6 +78,9 @@ func Load() (*Config, error) {
 		ScreeningServiceURL: getenv("SCREENING_SERVICE_URL", "https://passport-model.onrender.com"),
 		ScreeningAPIKey:     getenv("SCREENING_SERVICE_API_KEY", "midv2020-secret-api-key-2026"),
 		ScreeningTimeout:    getdur("SCREENING_SERVICE_TIMEOUT", 60*time.Second),
+
+		StorageDriver:   getenv("STORAGE_DRIVER", "local"),
+		LocalStorageDir: getenv("LOCAL_STORAGE_DIR", "./data/uploads"),
 	}
 
 	if c.JWTSecret == "" {
