@@ -98,6 +98,7 @@ func (s *UserService) Create(ctx context.Context, actorID, ip string, in model.C
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        actorID,
 		Action:        model.ActionUserCreated,
+		Region:        created.Region,
 		ReferenceType: "user",
 		ReferenceID:   created.ID.Hex(),
 		NewData: bson.M{
@@ -112,8 +113,8 @@ func (s *UserService) Create(ctx context.Context, actorID, ip string, in model.C
 	return created.View(), nil
 }
 
-func (s *UserService) List(ctx context.Context, cursor string, limit int64) (response.Page[model.UserView], error) {
-	return s.users.List(ctx, cursor, limit)
+func (s *UserService) List(ctx context.Context, f model.UserFilter, cursor string, limit int64) (response.Page[model.UserView], error) {
+	return s.users.List(ctx, f, cursor, limit)
 }
 
 func (s *UserService) Profile(ctx context.Context, userID string) (model.UserView, error) {
@@ -144,6 +145,7 @@ func (s *UserService) ChangePassword(ctx context.Context, userID, ip, current, n
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        userID,
 		Action:        model.ActionUserPasswordChanged,
+		Region:        u.Region,
 		ReferenceType: "user",
 		ReferenceID:   userID,
 		IPAddress:     ip,
@@ -185,6 +187,7 @@ func (s *UserService) ResetPassword(ctx context.Context, actor jwt.TokenData, ip
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        actor.UserID,
 		Action:        model.ActionUserPasswordReset,
+		Region:        target.Region,
 		ReferenceType: "user",
 		ReferenceID:   targetID,
 		NewData:       bson.M{"target_username": target.Username},

@@ -102,3 +102,9 @@ type CreateUserInput struct {
 	Region       string `json:"region" binding:"omitempty,max=80"`
 	CheckpointID string `json:"checkpoint_id" binding:"omitempty,max=32"`
 }
+
+// UserFilter narrows a user list query — Region is set in the handler, not the client.
+type UserFilter struct {
+	Region string
+	Deny   bool // set for a misconfigured admin (no region) — fail closed, not unscoped
+}

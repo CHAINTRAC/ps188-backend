@@ -43,6 +43,7 @@ func (s *CheckpointService) Create(ctx context.Context, actorID, ip string, in m
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        actorID,
 		Action:        model.ActionCheckpointCreated,
+		Region:        created.Region,
 		ReferenceType: "checkpoint",
 		ReferenceID:   created.Code,
 		NewData:       bson.M{"code": created.Code, "region": created.Region, "admin_id": created.AdminID},
@@ -93,6 +94,7 @@ func (s *CheckpointService) Update(ctx context.Context, actorID, ip, code string
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        actorID,
 		Action:        model.ActionCheckpointUpdated,
+		Region:        updated.Region,
 		ReferenceType: "checkpoint",
 		ReferenceID:   updated.Code,
 		OldData:       bson.M{"admin_id": before.AdminID, "status": before.Status},
