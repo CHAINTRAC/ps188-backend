@@ -120,9 +120,15 @@ cases, audit trail.
 - [ ] **Phase K contract fixes** *(XS)* — ~~`risk_score` as int `0–100`~~ **done in Phase D**;
       still to do: add `http://localhost:5173` to `CORS_ALLOW_ORIGINS`; audit
       `ScreeningView` fields against what the UI reads.
-- [ ] **Audit read API — Phase G core** *(S)* — `AuditRepository.Find(filter, cursor,
-      limit)` (repo stays insert-only otherwise) + `GET /api/audit-logs` (admin = own
-      region, superadmin = org), cursor-paginated, newest first. Logs already written.
+- [x] **Audit read API — Phase G core** *(done 2026-09-07)* — `AuditRepository.List`
+      (repo stays insert-only otherwise, append-only) + `GET /api/audit-logs`, scoped by
+      `middleware.ScopeAuditToActor` (verifier = own `user_id`, admin = own region
+      fail-closed if unset, superadmin = org-wide), cursor-paginated newest first.
+      `AuditLog`/`AuditLogView` gained `Region` (denormalised at write time). `/users`
+      list also gained region scoping (`UserFilter`) in the same commit. Frontend
+      `AuditLog.jsx`/`AuditTrail.jsx` wired to it via `features/audit/` — only the
+      `SuperAdminDashboard.jsx` audit card still reads mock data (frontend-only, no
+      backend work left).
 - [ ] **Dashboard summary — Phase E minimal** *(M)* — `GET /api/dashboard/summary`,
       role-aware: screenings today, verdict split, pending decisions, weekly volume.
       **Skip "accuracy %"** until its definition is signed off.
@@ -199,7 +205,7 @@ cases, audit trail.
 - [x] Checkpoints registry (`/api/checkpoints`) — done in Phase A
 - [ ] Face verification module (PS Module 4) behind a `FaceEngine` interface
 - [ ] Cases — link multiple screenings of the same traveller (multiple-identity detection)
-- [ ] Audit read API (`GET /api/audit-logs`, admin)
+- [x] Audit read API (`GET /api/audit-logs`, scoped per role) — done 2026-09-07
 - [ ] Dashboard summary (`GET /api/dashboard/summary`)
 - [ ] Async screening (worker + `202 processing`) if the model gets slow
 
@@ -371,23 +377,31 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 - [ ] Tests — mock engine match/no-match, threshold boundary, image round-trip.
 
 ## Phase G — Audit read API + expanded actions  (UI: admin AuditLog, superadmin AuditTrail)
-- [ ] `AuditRepository.Find(ctx, filter, cursor, limit)` — additive, repo stays
-      Insert-only otherwise (no update/delete).
-- [ ] `model/audit.go` — new action constants: `auth.login`, `user.role_changed`,
-      `user.updated`, `user.disabled`, `user.password_reset`, `user.password_changed`,
-      `checkpoint.created`, `checkpoint.updated`, `org.settings_updated`.
-- [ ] Denormalise `actor_name` + `region` onto each `AuditLog` at write time (UI lists
-      the actor's display name and a region/detail line without N+1 lookups).
-- [ ] `GET /api/audit-logs` — admin (own region) / superadmin (org). Filters
-      `?category=decision|user|login`, `?action=`, `?actor=`, `?reference_type=`,
-      `?reference_id=`. Cursor-paginated, newest first.
-- [ ] Wire the new audit writes into user update / role change / disable / checkpoint /
-      settings services.
-- [ ] Tests — filter by category, region isolation, append-only invariant.
+- [x] `AuditRepository.List(ctx, filter, cursor, limit)` *(done 2026-09-07 as `List`,
+      not `Find`)* — additive, repo stays Insert-only otherwise (no update/delete).
+- [ ] `model/audit.go` — new action constants: `user.role_changed`,
+      `user.updated`, `user.disabled`, `org.settings_updated`. *(`auth.login`,
+      `user.password_reset`, `user.password_changed`, `checkpoint.created`,
+      `checkpoint.updated` already existed pre-Phase G.)*
+- [ ] Denormalise `actor_name` onto each `AuditLog` at write time (UI lists the actor's
+      display name without N+1 lookups). *(`region` denormalisation done 2026-09-07 —
+      see below; `actor_name` still missing.)*
+- [x] `GET /api/audit-logs` *(done 2026-09-07)* — verifier (own `user_id`) / admin (own
+      region, fail-closed if unset) / superadmin (org), via `middleware.ScopeAuditToActor`.
+      Filters implemented: `?action=`, `?region=`. **Not yet implemented:**
+      `?category=decision|user|login`, `?actor=`, `?reference_type=`, `?reference_id=`.
+      Cursor-paginated, newest first.
+- [ ] Wire the new audit writes into user update / role change / disable / settings
+      services. *(Checkpoint create/update already write audit entries — region-stamped
+      as of 2026-09-07.)*
+- [ ] Tests — filter by category, region isolation, append-only invariant. *(No test
+      file added with the 2026-09-07 commit — still open.)*
 
 ## Phase H — User management (UI: admin Verifiers, superadmin Admins)
-- [ ] `GET /api/users?role=&region=&status=` — admin auto-scoped to `role=verifier` +
-      own region; superadmin can list `role=admin` and filter by region.
+- [~] `GET /api/users?role=&region=&status=` — region scoping done 2026-09-07
+      (`UserFilter.Region`, admin auto-scoped by `middleware.RegionScope`, fail-closed
+      if unset; superadmin can pass `?region=`). **Still missing:** `role=` / `status=`
+      query filters.
 - [ ] `PATCH /api/users/:id` — update `checkpoint_id`, `region`, `status`
       (enable/disable). Role change is **superadmin only**. Audit `user.updated` /
       `user.role_changed` / `user.disabled`.
