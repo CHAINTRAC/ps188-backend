@@ -23,7 +23,7 @@ type UserRepository interface {
 	// FindByIdentifier matches a lower-cased value against either username or
 	// email — the UI sign-in form submits an email.
 	FindByIdentifier(ctx context.Context, identifier string) (*model.User, error)
-	List(ctx context.Context, cursor string, limit int64) (response.Page[model.UserView], error)
+	List(ctx context.Context, f model.UserFilter, cursor string, limit int64) (response.Page[model.UserView], error)
 	Count(ctx context.Context) (int64, error)
 	// UpdatePassword replaces the stored bcrypt hash.
 	UpdatePassword(ctx context.Context, id, passwordHash string) error
@@ -113,9 +113,12 @@ func (r *mongoUserRepo) UpdatePassword(ctx context.Context, id, passwordHash str
 	return nil
 }
 
-func (r *mongoUserRepo) List(ctx context.Context, cursor string, limit int64) (response.Page[model.UserView], error) {
+func (r *mongoUserRepo) List(ctx context.Context, f model.UserFilter, cursor string, limit int64) (response.Page[model.UserView], error) {
 	var zero response.Page[model.UserView]
 	filter := bson.M{}
+	if f.Region != "" {
+		filter["region"] = f.Region
+	}
 	if cursor != "" {
 		oid, err := bson.ObjectIDFromHex(cursor)
 		if err != nil {

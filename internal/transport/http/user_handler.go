@@ -33,7 +33,21 @@ func (h *userHandler) create(c *gin.Context) {
 
 func (h *userHandler) list(c *gin.Context) {
 	cursor, limit := pageParams(c)
-	page, err := h.users.List(c.Request.Context(), cursor, limit)
+	actor, _ := middleware.Principal(c)
+	filter := model.UserFilter{Region: middleware.RegionScope(actor)}
+	if filter.Region == "" {
+		if actor.Role == string(model.RoleAdmin) {
+			filter.Deny = true // misconfigured account — fail closed, not unscoped
+		} else {
+			filter.Region = c.Query("region")
+		}
+	}
+	if filter.Deny {
+		response.Paginated(c, response.Page[model.UserView]{Data: []model.UserView{}}, "Users")
+		return
+	}
+
+	page, err := h.users.List(c.Request.Context(), filter, cursor, limit)
 	if err != nil {
 		middleware.Fail(c, err)
 		return

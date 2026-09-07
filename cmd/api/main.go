@@ -92,6 +92,7 @@ func run(log *slog.Logger) error {
 	userSvc := service.NewUserService(userRepo, auditRepo, checkpointSvc)
 	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo)
 	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, fileStore, engine, blacklistSvc, log)
+	auditSvc := service.NewAuditService(auditRepo)
 
 	if seeded, err := userSvc.SeedAdmin(ctx, cfg.SuperAdminUsername, cfg.SuperAdminPassword, cfg.SuperAdminEmail); err != nil {
 		return err
@@ -103,7 +104,7 @@ func run(log *slog.Logger) error {
 	router := httptransport.NewRouter(httptransport.Deps{
 		Cfg: cfg, Log: log, Mongo: db, JWT: jwtMgr,
 		Auth: authSvc, Users: userSvc, Screenings: screeningSvc,
-		Blacklist: blacklistSvc, Checkpoints: checkpointSvc,
+		Blacklist: blacklistSvc, Checkpoints: checkpointSvc, Audit: auditSvc,
 	})
 
 	srv := &http.Server{

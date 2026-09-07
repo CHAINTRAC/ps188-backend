@@ -171,6 +171,7 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        in.OfficerID,
 		Action:        model.ActionScreeningSubmitted,
+		Region:        updated.Region,
 		ReferenceType: "screening",
 		ReferenceID:   updated.ID.Hex(),
 		NewData: bson.M{
@@ -295,13 +296,15 @@ func (s *ScreeningService) Decide(ctx context.Context, id, actorID, ip string, d
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        actorID,
 		Action:        model.ActionScreeningDecided,
+		Region:        updated.Region,
 		ReferenceType: "screening",
 		ReferenceID:   id,
 		OldData:       bson.M{"verdict": sc.Verdict, "risk_score": sc.Risk},
 		NewData: bson.M{
-			"decision": decision,
-			"reason":   reason,
-			"detail":   model.ActionScreeningDecided + " · " + strings.ToUpper(string(decision)),
+			"decision":     decision,
+			"reason":       reason,
+			"reference_no": sc.ReferenceNo,
+			"detail":       model.ActionScreeningDecided + " · " + strings.ToUpper(string(decision)),
 		},
 		IPAddress: ip,
 		CreatedAt: time.Now().UTC(),

@@ -30,6 +30,7 @@ type Deps struct {
 	Screenings  *service.ScreeningService
 	Blacklist   *service.BlacklistService
 	Checkpoints *service.CheckpointService
+	Audit       *service.AuditService
 }
 
 // NewRouter builds the fully-wired gin.Engine.
@@ -54,6 +55,7 @@ func NewRouter(d Deps) *gin.Engine {
 	scrH := &screeningHandler{screenings: d.Screenings, maxUpload: d.Cfg.MaxUploadBytes}
 	blH := &blacklistHandler{blacklist: d.Blacklist}
 	cpH := &checkpointHandler{checkpoints: d.Checkpoints}
+	auH := &auditHandler{audit: d.Audit}
 
 	authed := middleware.Authenticate(d.JWT)
 	// admin-level routes are open to both admin and super admin.
@@ -93,6 +95,9 @@ func NewRouter(d Deps) *gin.Engine {
 		cp.GET("", admin, cpH.list) // admin = own region, super admin = all
 		cp.GET("/:code", admin, cpH.get)
 		cp.PATCH("/:code", superadmin, cpH.update)
+
+		au := api.Group("/audit-logs", authed)
+		au.GET("", auH.list) // all three roles — ScopeAuditToActor decides what each sees
 	}
 	return r
 }

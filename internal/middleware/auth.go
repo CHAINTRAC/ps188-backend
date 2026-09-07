@@ -91,3 +91,22 @@ func ScopeToActor(c *gin.Context, f *model.ScreeningFilter) {
 		f.OfficerID = ""
 	}
 }
+
+// ScopeAuditToActor is ScopeToActor's counterpart for audit logs.
+func ScopeAuditToActor(c *gin.Context, f *model.AuditFilter) {
+	p, ok := Principal(c)
+	if !ok {
+		return
+	}
+	switch p.Role {
+	case string(model.RoleVerifier):
+		f.UserID = p.UserID
+		f.Region = ""
+	case string(model.RoleAdmin):
+		f.Region = p.Region
+		f.UserID = ""
+		if p.Region == "" {
+			f.Deny = true // misconfigured account — fail closed, not unscoped
+		}
+	}
+}

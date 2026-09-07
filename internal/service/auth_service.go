@@ -65,6 +65,7 @@ func (s *AuthService) Login(ctx context.Context, identifier, password, ip string
 	_ = s.audit.Insert(ctx, model.AuditLog{
 		UserID:        u.ID.Hex(),
 		Action:        model.ActionAuthLogin,
+		Region:        u.Region,
 		ReferenceType: "user",
 		ReferenceID:   u.ID.Hex(),
 		NewData:       bson.M{"username": u.Username, "role": u.Role, "region": u.Region},
