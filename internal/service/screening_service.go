@@ -21,14 +21,16 @@ import (
 	"github.com/sih26/ps188-backend/internal/storage"
 )
 
-// Risk-score bumps applied when a post-engine check raises a flag. The verdict is
-// never changed and the screening never auto-blocks — these only nudge the score
-// the officer sees. Scale is 0.0–1.0.
+// Risk-score bumps applied when a post-engine check raises a flag. Scale is
+// 0.0–1.0. The screening never auto-blocks.
 const (
 	riskBumpBlacklist    = 0.25
 	riskBumpExpired      = 0.15
 	riskBumpFaceMismatch = 0.30
 )
+
+// Matches passport-model's own RiskEngine GENUINE cutoff.
+const genuineRiskCeiling = 0.35
 
 // SubmitInput is the validated payload for a new screening.
 type SubmitInput struct {
@@ -184,8 +186,8 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 	}
 
 	// Post-engine checks: blacklist (document number + identity) and document
-	// expiry. A hit raises an advisory flag and bumps the risk score — it never
-	// changes the verdict or blocks the officer.
+	// expiry. A hit raises an advisory flag and bumps the risk score — it
+	// never blocks the officer.
 	flags, matches, extraReasons, bump := s.postEngineChecks(ctx, in, result)
 
 	faceMatch, faceFlags, faceReasons, faceBump := s.runFaceMatch(ctx, in)
@@ -198,8 +200,14 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 		if updated.Engine == nil {
 			appendReasons = nil // nothing to append reasons to on a failed engine run
 		}
+		bumpedRisk := clampRisk(updated.Risk + bump)
+		// Upgrade a stale GENUINE only — never downgrade an existing SUSPICIOUS.
+		var newVerdict model.Verdict
+		if updated.Verdict == model.VerdictGenuine && bumpedRisk >= genuineRiskCeiling {
+			newVerdict = model.VerdictSuspicious
+		}
 		checked, cerr := s.repo.SetChecks(ctx, updated.ID.Hex(), flags, matches,
-			clampRisk(updated.Risk+bump), appendReasons, faceMatch)
+			bumpedRisk, appendReasons, faceMatch, newVerdict)
 		if cerr != nil {
 			s.log.WarnContext(ctx, "persisting screening checks failed",
 				slog.String("screening_id", updated.ID.Hex()), slog.String("error", cerr.Error()))

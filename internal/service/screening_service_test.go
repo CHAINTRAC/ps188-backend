@@ -130,6 +130,9 @@ func TestScreeningService_Submit_BlacklistHit_RaisesFlag(t *testing.T) {
 	if view.RiskScore <= 10 { // 0.10 engine baseline → 10/100
 		t.Fatalf("risk_score = %v, expected a bump over the 10/100 engine baseline", view.RiskScore)
 	}
+	if view.Verdict != model.VerdictSuspicious {
+		t.Fatalf("verdict = %v, want the blacklist bump to upgrade GENUINE to SUSPICIOUS", view.Verdict)
+	}
 	// The reason is surfaced on the engine evidence.
 	if view.Engine == nil || !slices.ContainsFunc(view.Engine.Reasons, func(r string) bool {
 		return strings.Contains(r, "Blacklist hit")

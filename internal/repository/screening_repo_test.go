@@ -159,7 +159,7 @@ func TestScreeningRepository_SetChecks(t *testing.T) {
 
 	matches := []model.BlacklistMatch{{EntryID: "e1", Kind: model.BlacklistDocument, DocNumber: "Z1", Reason: "stolen"}}
 	updated, err := repo.SetChecks(ctx, id, []string{model.FlagBlacklistHit}, matches, 0.35,
-		[]string{"Blacklist hit (document): stolen"}, nil)
+		[]string{"Blacklist hit (document): stolen"}, nil, "")
 	if err != nil {
 		t.Fatalf("set checks: %v", err)
 	}
