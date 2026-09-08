@@ -20,3 +20,4 @@ coverage.*
 .DS_Store
 .idea/
 .vscode/
+docker-compose.override.yml

@@ -237,6 +237,24 @@ func activityGroup(field string, todayStart time.Time) bson.M {
 
 // --- facet result decoders ----------------------------------------------------
 
+// asDoc normalises a decoded BSON document to bson.M. The driver hands nested
+// documents inside a []bson.M result back as bson.D (ordered), so every facet
+// row and every composite _id has to go through this.
+func asDoc(v any) bson.M {
+	switch d := v.(type) {
+	case bson.M:
+		return d
+	case bson.D:
+		m := make(bson.M, len(d))
+		for _, e := range d {
+			m[e.Key] = e.Value
+		}
+		return m
+	default:
+		return nil
+	}
+}
+
 func toInt(v any) int {
 	switch n := v.(type) {
 	case int32:
@@ -268,7 +286,7 @@ func facetCount(f bson.M, key string) int {
 	if len(a) == 0 {
 		return 0
 	}
-	if m, ok := a[0].(bson.M); ok {
+	if m := asDoc(a[0]); m != nil {
 		return toInt(m["n"])
 	}
 	return 0
@@ -279,8 +297,8 @@ func facetAvgSeconds(f bson.M, key string) int {
 	if len(a) == 0 {
 		return 0
 	}
-	m, ok := a[0].(bson.M)
-	if !ok {
+	m := asDoc(a[0])
+	if m == nil {
 		return 0
 	}
 	ms, _ := m["ms"].(float64)
@@ -304,8 +322,8 @@ func verdictBandKey(v model.Verdict) string {
 func facetVerdictSplit(f bson.M, key string) model.VerdictSplit {
 	var out model.VerdictSplit
 	for _, row := range facetArray(f, key) {
-		m, ok := row.(bson.M)
-		if !ok {
+		m := asDoc(row)
+		if m == nil {
 			continue
 		}
 		id, _ := m["_id"].(string)
@@ -333,11 +351,11 @@ func facetWeekly(f bson.M, key string, weekStart time.Time) []model.DayVolume {
 		byDate[key] = &days[i]
 	}
 	for _, row := range facetArray(f, key) {
-		m, ok := row.(bson.M)
-		if !ok {
+		m := asDoc(row)
+		if m == nil {
 			continue
 		}
-		id, _ := m["_id"].(bson.M)
+		id := asDoc(m["_id"])
 		if id == nil {
 			continue
 		}
@@ -363,8 +381,8 @@ func facetWeekly(f bson.M, key string, weekStart time.Time) []model.DayVolume {
 func facetActivity(f bson.M, key string) []model.ActorActivity {
 	out := []model.ActorActivity{}
 	for _, row := range facetArray(f, key) {
-		m, ok := row.(bson.M)
-		if !ok {
+		m := asDoc(row)
+		if m == nil {
 			continue
 		}
 		id, _ := m["_id"].(string)
@@ -389,8 +407,8 @@ func facetActivity(f bson.M, key string) []model.ActorActivity {
 func facetDocTypes(f bson.M, key string) []model.DocTypeCount {
 	out := []model.DocTypeCount{}
 	for _, row := range facetArray(f, key) {
-		m, ok := row.(bson.M)
-		if !ok {
+		m := asDoc(row)
+		if m == nil {
 			continue
 		}
 		id, _ := m["_id"].(string)
@@ -405,8 +423,8 @@ func facetDocTypes(f bson.M, key string) []model.DocTypeCount {
 func facetFlagged(f bson.M, key string) []model.FlaggedCase {
 	out := []model.FlaggedCase{}
 	for _, row := range facetArray(f, key) {
-		m, ok := row.(bson.M)
-		if !ok {
+		m := asDoc(row)
+		if m == nil {
 			continue
 		}
 		var id string

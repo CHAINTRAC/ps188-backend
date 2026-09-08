@@ -75,8 +75,8 @@ func TestUserService_Update_AdminCannotTouchOtherRegionOrRole(t *testing.T) {
 	north := mkVerifier(t, svc, db, "v-n", "CP-N")
 	if _, err := svc.Update(context.Background(), adminNorth, "127.0.0.1", north.ID, model.UpdateUserInput{
 		Role: ptr(model.RoleAdmin),
-	}); apperr.From(err).Code != apperr.ERRORS.CannotModifySelf.Code {
-		t.Fatalf("want CannotModifySelf (role change gated), got %v", err)
+	}); apperr.From(err).Code != apperr.ERRORS.Forbidden.Code {
+		t.Fatalf("want Forbidden (role change is superadmin-only), got %v", err)
 	}
 }
 
@@ -103,21 +103,15 @@ func TestUserService_Update_SuperAdminPromotesVerifierToAdmin(t *testing.T) {
 	db := testsupport.RequireMongo(t)
 	svc := newUserSvc(t, db)
 	seedCheckpoint(t, db, "CP-N", "north")
+	seedCheckpoint(t, db, "CP-S", "south")
 	v := mkVerifier(t, svc, db, "v-n", "CP-N")
 
 	super := jwt.TokenData{UserID: "super-1", Role: string(model.RoleSuperAdmin)}
 
-	// Promote without a region for the new admin role → MissingScopeField.
-	if _, err := svc.Update(context.Background(), super, "127.0.0.1", v.ID, model.UpdateUserInput{
-		Role: ptr(model.RoleAdmin),
-	}); apperr.From(err).Code != apperr.ERRORS.MissingScopeField.Code {
-		t.Fatalf("want MissingScopeField, got %v", err)
-	}
-
-	// With a region it succeeds and the checkpoint is cleared.
+	// Promote: the verifier's checkpoint-derived region carries over as the
+	// admin region, and the checkpoint binding is cleared.
 	out, err := svc.Update(context.Background(), super, "127.0.0.1", v.ID, model.UpdateUserInput{
-		Role:   ptr(model.RoleAdmin),
-		Region: ptr("north"),
+		Role: ptr(model.RoleAdmin),
 	})
 	if err != nil {
 		t.Fatalf("promote: %v", err)
@@ -126,9 +120,48 @@ func TestUserService_Update_SuperAdminPromotesVerifierToAdmin(t *testing.T) {
 		t.Fatalf("promote result = %+v", out)
 	}
 
+	// A different region can be set in the same call.
+	out2, err := svc.Update(context.Background(), super, "127.0.0.1", v.ID, model.UpdateUserInput{
+		Region: ptr("south"),
+	})
+	if err != nil || out2.Region != "south" {
+		t.Fatalf("region reassign: %v / %+v", err, out2)
+	}
+
 	logs, _ := repository.NewAuditRepository(db).List(context.Background(), model.AuditFilter{Action: model.ActionUserRoleChanged}, "", 10)
 	if len(logs.Data) != 1 {
 		t.Fatalf("want 1 user.role_changed entry, got %d", len(logs.Data))
+	}
+}
+
+func TestUserService_Update_SuperAdminDemoteRequiresCheckpoint(t *testing.T) {
+	db := testsupport.RequireMongo(t)
+	svc := newUserSvc(t, db)
+	seedCheckpoint(t, db, "CP-N", "north")
+
+	in := baseUser(model.RoleAdmin)
+	in.Region = "north"
+	admin, err := svc.Create(context.Background(), "super-1", "127.0.0.1", in)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	super := jwt.TokenData{UserID: "super-1", Role: string(model.RoleSuperAdmin)}
+
+	// admin -> verifier with no checkpoint → MissingScopeField.
+	if _, err := svc.Update(context.Background(), super, "127.0.0.1", admin.ID, model.UpdateUserInput{
+		Role: ptr(model.RoleVerifier),
+	}); apperr.From(err).Code != apperr.ERRORS.MissingScopeField.Code {
+		t.Fatalf("want MissingScopeField, got %v", err)
+	}
+
+	// With a checkpoint it succeeds.
+	out, err := svc.Update(context.Background(), super, "127.0.0.1", admin.ID, model.UpdateUserInput{
+		Role:         ptr(model.RoleVerifier),
+		CheckpointID: ptr("CP-N"),
+	})
+	if err != nil || out.Role != model.RoleVerifier || out.CheckpointID != "CP-N" || out.Region != "north" {
+		t.Fatalf("demote: %v / %+v", err, out)
 	}
 }
 

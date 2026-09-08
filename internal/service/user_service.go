@@ -148,8 +148,11 @@ func (s *UserService) Update(ctx context.Context, actor jwt.TokenData, ip, targe
 	newRole := target.Role
 	roleChanged := false
 	if in.Role != nil && *in.Role != target.Role {
-		if !isSuper || self {
+		if self {
 			return zero, apperr.ERRORS.CannotModifySelf
+		}
+		if !isSuper {
+			return zero, apperr.ERRORS.Forbidden // role changes are super-admin only
 		}
 		if !in.Role.Valid() {
 			return zero, apperr.ERRORS.InvalidRole
