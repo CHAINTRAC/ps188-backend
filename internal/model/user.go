@@ -43,6 +43,14 @@ const (
 	UserDisabled UserStatus = "disabled"
 )
 
+func (s UserStatus) Valid() bool {
+	switch s {
+	case UserActive, UserDisabled:
+		return true
+	}
+	return false
+}
+
 // User is the stored document. PasswordHash never leaves the repository layer.
 //
 // Region and CheckpointID scope what a user can see and do. A verifier is bound
@@ -103,8 +111,22 @@ type CreateUserInput struct {
 	CheckpointID string `json:"checkpoint_id" binding:"omitempty,max=32"`
 }
 
-// UserFilter narrows a user list query — Region is set in the handler, not the client.
+// UserFilter narrows a user list query. Region is set in the handler from the
+// caller's scope, not the client; Role and Status come from query params.
 type UserFilter struct {
 	Region string
+	Role   Role
+	Status UserStatus
 	Deny   bool // set for a misconfigured admin (no region) — fail closed, not unscoped
+}
+
+// UpdateUserInput carries the mutable fields of an account. A nil pointer means
+// "leave unchanged". Role changes are super-admin only (enforced in the service);
+// changing Role also requires the matching scope field for the new role
+// (CheckpointID for verifier, Region for admin).
+type UpdateUserInput struct {
+	Status       *UserStatus `json:"status" binding:"omitempty"`
+	Role         *Role       `json:"role" binding:"omitempty"`
+	Region       *string     `json:"region" binding:"omitempty,max=80"`
+	CheckpointID *string     `json:"checkpoint_id" binding:"omitempty,max=32"`
 }

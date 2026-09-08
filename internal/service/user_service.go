@@ -113,6 +113,159 @@ func (s *UserService) Create(ctx context.Context, actorID, ip string, in model.C
 	return created.View(), nil
 }
 
+// Update changes an account's status, scope (region / checkpoint), or role.
+// A super admin may edit anyone; an admin may edit only a verifier in their own
+// region and may never change a role. Nobody may disable their own account or
+// change their own role. A role change re-derives the scope for the new role
+// (checkpoint required for verifier, region for admin, both cleared for super
+// admin). Writes an audit entry — user.role_changed / user.disabled /
+// user.updated, most-specific wins.
+func (s *UserService) Update(ctx context.Context, actor jwt.TokenData, ip, targetID string, in model.UpdateUserInput) (model.UserView, error) {
+	var zero model.UserView
+
+	target, err := s.users.FindByID(ctx, targetID)
+	if err != nil {
+		return zero, err
+	}
+
+	isSuper := actor.Role == string(model.RoleSuperAdmin)
+	isAdmin := actor.Role == string(model.RoleAdmin)
+
+	switch {
+	case isSuper:
+		// may edit anyone
+	case isAdmin:
+		if target.Role != model.RoleVerifier || target.Region == "" || target.Region != actor.Region {
+			return zero, apperr.ERRORS.Forbidden
+		}
+	default:
+		return zero, apperr.ERRORS.Forbidden
+	}
+
+	self := targetID == actor.UserID
+
+	// Resolve the post-update role.
+	newRole := target.Role
+	roleChanged := false
+	if in.Role != nil && *in.Role != target.Role {
+		if !isSuper || self {
+			return zero, apperr.ERRORS.CannotModifySelf
+		}
+		if !in.Role.Valid() {
+			return zero, apperr.ERRORS.InvalidRole
+		}
+		newRole, roleChanged = *in.Role, true
+	}
+
+	set := bson.M{}
+	if roleChanged {
+		set["role"] = newRole
+	}
+
+	region, checkpointID := target.Region, target.CheckpointID
+	switch newRole {
+	case model.RoleVerifier:
+		cp := checkpointID
+		if in.CheckpointID != nil {
+			cp = model.NormalizeCheckpointCode(*in.CheckpointID)
+		}
+		if cp == "" {
+			return zero, apperr.ERRORS.MissingScopeField
+		}
+		if cp != checkpointID || roleChanged {
+			r, err := s.checkpoints.Resolve(ctx, cp)
+			if err != nil {
+				return zero, err
+			}
+			if isAdmin && r != actor.Region {
+				return zero, apperr.ERRORS.Forbidden // can't move a verifier out of your region
+			}
+			region, checkpointID = r, cp
+			set["checkpoint_id"] = checkpointID
+			set["region"] = region
+		}
+	case model.RoleAdmin:
+		reg := region
+		if in.Region != nil {
+			reg = strings.TrimSpace(*in.Region)
+		}
+		if reg == "" {
+			return zero, apperr.ERRORS.MissingScopeField
+		}
+		if reg != region || roleChanged {
+			ok, err := s.checkpoints.RegionExists(ctx, reg)
+			if err != nil {
+				return zero, err
+			}
+			if !ok {
+				return zero, apperr.ERRORS.UnknownRegion
+			}
+			region = reg
+			set["region"] = region
+			if roleChanged {
+				checkpointID = ""
+				set["checkpoint_id"] = ""
+			}
+		}
+	case model.RoleSuperAdmin:
+		if roleChanged {
+			set["region"] = ""
+			set["checkpoint_id"] = ""
+		}
+	}
+
+	// Status.
+	disabling := false
+	statusChanged := false
+	if in.Status != nil && *in.Status != target.Status {
+		if !in.Status.Valid() {
+			return zero, apperr.ERRORS.ValidationError
+		}
+		if self && *in.Status == model.UserDisabled {
+			return zero, apperr.ERRORS.CannotModifySelf
+		}
+		set["status"] = *in.Status
+		statusChanged = true
+		disabling = *in.Status == model.UserDisabled
+	}
+
+	if len(set) == 0 {
+		return target.View(), nil
+	}
+
+	updated, err := s.users.Update(ctx, targetID, set)
+	if err != nil {
+		return zero, err
+	}
+
+	action := model.ActionUserUpdated
+	switch {
+	case roleChanged:
+		action = model.ActionUserRoleChanged
+	case statusChanged && disabling:
+		action = model.ActionUserDisabled
+	}
+	_ = s.audit.Insert(ctx, model.AuditLog{
+		UserID:        actor.UserID,
+		Action:        action,
+		Region:        updated.Region,
+		ReferenceType: "user",
+		ReferenceID:   targetID,
+		OldData: bson.M{
+			"role": target.Role, "status": target.Status,
+			"region": target.Region, "checkpoint_id": target.CheckpointID,
+		},
+		NewData: bson.M{
+			"role": updated.Role, "status": updated.Status,
+			"region": updated.Region, "checkpoint_id": updated.CheckpointID,
+			"target_username": updated.Username,
+		},
+		IPAddress: ip,
+		CreatedAt: time.Now().UTC(),
+	})
+	return updated.View(), nil
+}
+
 func (s *UserService) List(ctx context.Context, f model.UserFilter, cursor string, limit int64) (response.Page[model.UserView], error) {
 	return s.users.List(ctx, f, cursor, limit)
 }

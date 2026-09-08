@@ -29,6 +29,11 @@ type ScreeningRepository interface {
 	SetDecision(ctx context.Context, id string, d model.OfficerDecision) (*model.Screening, error)
 	// NextSequence returns a gapless per-day counter used to build reference_no.
 	NextSequence(ctx context.Context, day string) (int64, error)
+	// Aggregate runs a read-only aggregation pipeline against the screenings
+	// collection and decodes the result documents into []bson.M. It is the single
+	// escape hatch the analytics service uses for dashboard / report rollups — all
+	// pipeline construction lives in service/analytics_service.go, never here.
+	Aggregate(ctx context.Context, pipeline mongo.Pipeline) ([]bson.M, error)
 }
 
 type mongoScreeningRepo struct {
@@ -193,6 +198,18 @@ func (r *mongoScreeningRepo) findOneAndUpdate(ctx context.Context, oid bson.Obje
 		return nil, apperr.ERRORS.DatabaseError.Wrap(err)
 	}
 	return &s, nil
+}
+
+func (r *mongoScreeningRepo) Aggregate(ctx context.Context, pipeline mongo.Pipeline) ([]bson.M, error) {
+	cur, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, apperr.ERRORS.DatabaseError.Wrap(err)
+	}
+	var out []bson.M
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, apperr.ERRORS.DatabaseError.Wrap(err)
+	}
+	return out, nil
 }
 
 func (r *mongoScreeningRepo) NextSequence(ctx context.Context, day string) (int64, error) {

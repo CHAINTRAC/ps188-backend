@@ -362,6 +362,12 @@ db.Collection(model.CollUsers).Indexes().CreateMany(ctx, []mongo.IndexModel{
 Adding a collection or an access pattern = add its `mongo.IndexModel` here. The
 `counters` and GridFS collections need no explicit index beyond their `_id`.
 
+**Analytics** (`GET /api/dashboard/summary`, `GET /api/reports`) runs one
+`$facet` aggregation per request over `screenings`, prefixed with a scope
+`$match` on `officer_id` / `region` that the existing
+`{officer_id: 1, created_at: -1}` and `{region: 1, created_at: -1}` indexes
+already serve. No new index was added for it.
+
 ---
 
 ## 9. Relationships
