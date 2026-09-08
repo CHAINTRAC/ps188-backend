@@ -84,6 +84,7 @@ func NewRouter(d Deps) *gin.Engine {
 		scr.GET("", scrH.list)
 		scr.GET("/:id", scrH.get)
 		scr.GET("/:id/image", scrH.image)
+		scr.GET("/:id/selfie", scrH.selfie)
 		scr.POST("/:id/decision", verifier, scrH.decide)
 
 		bl := api.Group("/blacklist", authed)

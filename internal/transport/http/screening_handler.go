@@ -164,6 +164,17 @@ func (h *screeningHandler) image(c *gin.Context) {
 	c.Data(nethttp.StatusOK, nethttp.DetectContentType(buf.Bytes()), buf.Bytes())
 }
 
+func (h *screeningHandler) selfie(c *gin.Context) {
+	var buf bytes.Buffer
+	name, err := h.screenings.StreamSelfie(c.Request.Context(), c.Param("id"), &buf)
+	if err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	c.Header("Content-Disposition", "inline; filename=\""+name+"\"")
+	c.Data(nethttp.StatusOK, nethttp.DetectContentType(buf.Bytes()), buf.Bytes())
+}
+
 type decisionBody struct {
 	Decision string `json:"decision" binding:"required"`
 	Reason   string `json:"reason" binding:"required,min=1,max=1000"`

@@ -94,6 +94,16 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 	}
 	imageOID, _ := bson.ObjectIDFromHex(fileID)
 
+	var selfieOID bson.ObjectID
+	if len(in.Selfie) > 0 {
+		selfieFileID, err := s.files.Put(ctx, in.SelfieName, bytes.NewReader(in.Selfie))
+		if err != nil {
+			s.log.WarnContext(ctx, "storing selfie failed", slog.String("error", err.Error()))
+		} else {
+			selfieOID, _ = bson.ObjectIDFromHex(selfieFileID)
+		}
+	}
+
 	day := time.Now().UTC().Format("20060102")
 	seq, err := s.repo.NextSequence(ctx, day)
 	if err != nil {
@@ -110,6 +120,8 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 		DocType:         in.DocType,
 		ImageFileID:     imageOID,
 		ImageName:       in.ImageName,
+		SelfieFileID:    selfieOID,
+		SelfieName:      in.SelfieName,
 		SubmittedNumber: in.DocNumber,
 		MRZLine1:        in.MRZLine1,
 		MRZLine2:        in.MRZLine2,
@@ -119,6 +131,9 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 	sc, err = s.repo.Create(ctx, sc)
 	if err != nil {
 		_ = s.files.Delete(ctx, fileID)
+		if !selfieOID.IsZero() {
+			_ = s.files.Delete(ctx, selfieOID.Hex())
+		}
 		return zero, err
 	}
 
@@ -320,6 +335,22 @@ func (s *ScreeningService) StreamImage(ctx context.Context, id string, w io.Writ
 		return "", apperr.ERRORS.StorageFailed.Wrap(err)
 	}
 	return sc.ImageName, nil
+}
+
+// StreamSelfie writes the stored live-capture selfie for id into w. Not every
+// screening has one — face match is optional.
+func (s *ScreeningService) StreamSelfie(ctx context.Context, id string, w io.Writer) (string, error) {
+	sc, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if sc.SelfieFileID.IsZero() {
+		return "", apperr.ERRORS.ScreeningNotFound
+	}
+	if err := s.files.Get(ctx, sc.SelfieFileID.Hex(), w); err != nil {
+		return "", apperr.ERRORS.StorageFailed.Wrap(err)
+	}
+	return sc.SelfieName, nil
 }
 
 // Decide records the officer's manual call. Exactly one decision per screening.

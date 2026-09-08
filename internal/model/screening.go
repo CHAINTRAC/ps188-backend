@@ -214,6 +214,8 @@ type Screening struct {
 	DocType      DocType       `bson:"doc_type"`
 	ImageFileID  bson.ObjectID `bson:"image_file_id"` // GridFS file id
 	ImageName    string        `bson:"image_name"`
+	SelfieFileID bson.ObjectID `bson:"selfie_file_id,omitempty"`
+	SelfieName   string        `bson:"selfie_name,omitempty"`
 
 	// Flags are advisory markers raised during screening (e.g. "blacklist_hit",
 	// "expired_document", "face_mismatch"). Never auto-blocking — the officer decides.
@@ -249,6 +251,7 @@ type ScreeningView struct {
 	OfficerID        string           `json:"officer_id"`
 	DocType          DocType          `json:"doc_type"`
 	ImageURL         string           `json:"image_url"`
+	SelfieURL        string           `json:"selfie_url,omitempty"`
 	Flags            []string         `json:"flags"`
 	BlacklistMatches []BlacklistMatch `json:"blacklist_matches"`
 	Status           ScreeningStatus  `json:"status"`
@@ -277,6 +280,10 @@ func (s *Screening) View() ScreeningView {
 		v := s.Engine.View()
 		engine = &v
 	}
+	var selfieURL string
+	if !s.SelfieFileID.IsZero() {
+		selfieURL = "/api/screenings/" + s.ID.Hex() + "/selfie"
+	}
 	return ScreeningView{
 		ID:               s.ID.Hex(),
 		ReferenceNo:      s.ReferenceNo,
@@ -285,6 +292,7 @@ func (s *Screening) View() ScreeningView {
 		OfficerID:        s.OfficerID,
 		DocType:          s.DocType,
 		ImageURL:         "/api/screenings/" + s.ID.Hex() + "/image",
+		SelfieURL:        selfieURL,
 		Flags:            flags,
 		BlacklistMatches: matches,
 		Status:           s.Status,
