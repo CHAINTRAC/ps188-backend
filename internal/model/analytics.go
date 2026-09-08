@@ -24,9 +24,12 @@ type DayVolume struct {
 	Fake       int    `json:"fake"`
 }
 
-// ActorActivity is a screening count grouped by one actor id — an officer_id
-// (verifier roster) or a checkpoint_id (checkpoint table). ID is that raw id;
-// the UI joins it to a display name from its own users/checkpoints lists.
+// ActorActivity is a screening count grouped by one actor. ID is the raw grouping
+// key straight off the screening document: for verifier_activity it is the
+// officer's user-id hex (join to UserView.id); for checkpoint_activity /
+// checkpoint_breakdown it is the checkpoint *code* (e.g. "CP-04", join to
+// CheckpointView.code) — screenings denormalise the code, not the checkpoint's
+// ObjectID.
 type ActorActivity struct {
 	ID    string `json:"id"`
 	Today int    `json:"today"`

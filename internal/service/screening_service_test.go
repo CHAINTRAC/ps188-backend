@@ -194,7 +194,9 @@ func TestScreeningService_Submit_EngineDown_PersistsFailed(t *testing.T) {
 		Err: apperr.ERRORS.ScreeningEngineUnavailable,
 	})
 
-	view, err := svc.Submit(context.Background(), submitInput())
+	in := submitInput()
+	in.DocType = "" // officer left it to the model, which is now unreachable
+	view, err := svc.Submit(context.Background(), in)
 	if err != nil {
 		t.Fatalf("submit should not fail hard: %v", err)
 	}
@@ -203,6 +205,9 @@ func TestScreeningService_Submit_EngineDown_PersistsFailed(t *testing.T) {
 	}
 	if view.FailureReason == "" {
 		t.Fatal("expected a failure reason")
+	}
+	if !view.DocType.Valid() {
+		t.Fatalf("doc_type must never be blank, even on a failed run — got %q", view.DocType)
 	}
 
 	// The case is retrievable and carries the failure.

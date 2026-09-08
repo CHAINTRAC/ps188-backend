@@ -41,9 +41,16 @@ func (s *AnalyticsService) DashboardSummary(ctx context.Context, actor jwt.Token
 	case string(model.RoleVerifier):
 		scope["officer_id"] = actor.UserID
 	case string(model.RoleAdmin):
-		if actor.Region != "" {
-			scope["region"] = actor.Region
+		if actor.Region == "" {
+			// Misconfigured admin (no region). Fail closed — never fall through to
+			// an org-wide aggregation, matching the audit / users / reports scoping.
+			return model.DashboardSummary{
+				Role:         actor.Role,
+				VerdictSplit: model.VerdictSplit{},
+				WeeklyVolume: facetWeekly(nil, "weekly", weekStart),
+			}, nil
 		}
+		scope["region"] = actor.Region
 	}
 
 	facet := bson.M{

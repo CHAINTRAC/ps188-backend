@@ -116,6 +116,28 @@ func TestAnalyticsService_DashboardSummary_AdminRegionIsolation(t *testing.T) {
 	}
 }
 
+func TestAnalyticsService_DashboardSummary_MisconfiguredAdminFailsClosed(t *testing.T) {
+	db := testsupport.RequireMongo(t)
+	svc := newAnalyticsSvc(db)
+
+	seedScreening(t, db, 1, func(s *model.Screening) { s.Region = "north" })
+	seedScreening(t, db, 2, func(s *model.Screening) { s.Region = "south" })
+
+	// Admin with no region must NOT get org-wide numbers.
+	sum, err := svc.DashboardSummary(context.Background(), jwt.TokenData{
+		UserID: "admin", Role: string(model.RoleAdmin), Region: "",
+	})
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if sum.ScreeningsTotal != 0 || sum.ScreeningsToday != 0 || sum.VerdictSplit.Genuine != 0 {
+		t.Fatalf("misconfigured admin leaked org data: %+v", sum)
+	}
+	if len(sum.WeeklyVolume) != 7 {
+		t.Fatalf("weekly_volume len = %d, want 7", len(sum.WeeklyVolume))
+	}
+}
+
 func TestAnalyticsService_Reports(t *testing.T) {
 	db := testsupport.RequireMongo(t)
 	svc := newAnalyticsSvc(db)

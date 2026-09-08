@@ -128,13 +128,25 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 		Image:     in.Image,
 	})
 
+	// Resolve the doc type once: the officer's choice wins, then the model's
+	// classification (only available on a successful run), then a passport
+	// fallback — so the stored value and the API projection are never blank,
+	// including for a failed screening.
+	docType := in.DocType
+	if docType == "" && engErr == nil {
+		docType = result.DocType
+	}
+	if docType == "" {
+		docType = model.DocPassport
+	}
+
 	var updated *model.Screening
 	if engErr != nil {
 		ae := apperr.From(engErr)
 		s.log.WarnContext(ctx, "screening engine failed",
 			slog.String("screening_id", sc.ID.Hex()), slog.String("error", ae.Error()))
 		updated, err = s.repo.SetResult(ctx, sc.ID.Hex(),
-			model.StatusFailed, model.VerdictPending, 0, nil, ae.Message, in.DocType)
+			model.StatusFailed, model.VerdictPending, 0, nil, ae.Message, docType)
 	} else {
 		eng := &model.EngineResult{
 			Verdict:         result.Verdict,
@@ -143,15 +155,6 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 			ExtractedFields: result.ExtractedFields,
 			Evidence:        result.EvidenceItems,
 			RawEvidence:     bson.M(result.RawEvidence),
-		}
-		// Resolve the final doc type: the officer's choice wins, then the model's
-		// classification, then a passport fallback so the field is never blank.
-		docType := in.DocType
-		if docType == "" {
-			docType = result.DocType
-		}
-		if docType == "" {
-			docType = model.DocPassport
 		}
 		updated, err = s.repo.SetResult(ctx, sc.ID.Hex(),
 			model.StatusCompleted, result.Verdict, result.RiskScore, eng, "", docType)
