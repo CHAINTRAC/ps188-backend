@@ -117,9 +117,9 @@ cases, audit trail.
 **Commit the uncommitted Phase A / Phase C / blacklist-wiring work before starting.**
 
 ## P0 — demo blockers (do next)
-- [ ] **Phase K contract fixes** *(XS)* — ~~`risk_score` as int `0–100`~~ **done in Phase D**;
-      still to do: add `http://localhost:5173` to `CORS_ALLOW_ORIGINS`; audit
-      `ScreeningView` fields against what the UI reads.
+- [~] **Phase K contract fixes** *(XS)* — ~~`risk_score` as int `0–100`~~ **done in Phase D**;
+      ~~CORS Vite origin~~ dev default `*` works, `.env.example` documents `5173`
+      (2026-09-08); still to do: final `ScreeningView` field audit against the UI.
 - [x] **Audit read API — Phase G core** *(done 2026-09-07)* — `AuditRepository.List`
       (repo stays insert-only otherwise, append-only) + `GET /api/audit-logs`, scoped by
       `middleware.ScopeAuditToActor` (verifier = own `user_id`, admin = own region
@@ -129,15 +129,22 @@ cases, audit trail.
       `AuditLog.jsx`/`AuditTrail.jsx` wired to it via `features/audit/` — only the
       `SuperAdminDashboard.jsx` audit card still reads mock data (frontend-only, no
       backend work left).
-- [ ] **Dashboard summary — Phase E minimal** *(M)* — `GET /api/dashboard/summary`,
-      role-aware: screenings today, verdict split, pending decisions, weekly volume.
-      **Skip "accuracy %"** until its definition is signed off.
+- [x] **Dashboard summary — Phase E minimal** *(done 2026-09-08)* —
+      `GET /api/dashboard/summary` (role-aware) + `GET /api/reports` (admin/superadmin).
+      `service/analytics_service.go` — one `$facet` per endpoint via new
+      `ScreeningRepository.Aggregate`. Frontend `AdminDashboard` / `SuperAdminDashboard`
+      / `Reports` / `VerifierDashboard` rewired to them (`features/dashboard/`,
+      `features/reports/`). **"accuracy %" still skipped** — definition unsigned-off.
+      See Phase E section below.
 
 ## P1 — strong demo value
-- [ ] **Phase H — user management** *(M)* — `GET /api/users?role=&region=&status=`
-      (admin auto-scoped to `verifier` + own region; superadmin lists `admin`) +
-      `PATCH /api/users/:id` (enable/disable, reassign `checkpoint_id`/`region`;
-      role change superadmin-only). Audit `user.updated` / `user.disabled`.
+- [x] **Phase H — user management** *(done 2026-09-08)* —
+      `GET /api/users?role=&status=` filters added (region scoping already existed);
+      `PATCH /api/users/:id` (enable/disable, reassign `checkpoint_id`/`region`,
+      role change superadmin-only, self-guard `CANNOT_MODIFY_SELF` 30007). Audit
+      `user.updated` / `user.role_changed` / `user.disabled`. Frontend `Verifiers`
+      (status toggle + checkpoint reassign) and `Admins` (status + region + role)
+      detail drawers wired via `features/users` `useUpdateUser`. See Phase H below.
 - [ ] **Cases / multiple-identity detection** *(M)* — link screenings sharing an
       identity (name+DOB, or same `doc_number` across different holders) → raise the
       existing `multiple_identity` flag. Named PS requirement.
@@ -206,7 +213,7 @@ cases, audit trail.
 - [ ] Face verification module (PS Module 4) behind a `FaceEngine` interface
 - [ ] Cases — link multiple screenings of the same traveller (multiple-identity detection)
 - [x] Audit read API (`GET /api/audit-logs`, scoped per role) — done 2026-09-07
-- [ ] Dashboard summary (`GET /api/dashboard/summary`)
+- [x] Dashboard summary (`GET /api/dashboard/summary`) + reports (`GET /api/reports`) — done 2026-09-08 (Phase E)
 - [ ] Async screening (worker + `202 processing`) if the model gets slow
 
 ---
@@ -340,26 +347,34 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 - [ ] The model actually emitting per-field `confidence` and its own `evidence` tone
       (backend already consumes both when present; derivation is the fallback).
 
-## Phase E — Dashboard & reports aggregation  *(all new endpoints)*
+## Phase E — Dashboard & reports aggregation  *(done 2026-09-08 — accuracy % deferred)*
 - [ ] Define **"accuracy"** — the UI shows team/verifier/system accuracy %. Proposed:
       share of decided screenings where `officer_decision` agrees with the engine
-      verdict band (accept↔GENUINE, escalate↔SUSPICIOUS, reject↔FAKE). Needs sign-off.
-- [ ] `GET /api/dashboard/summary` — role-aware payload:
-  - [ ] verifier — my screenings today, my verdict split, my pending decisions,
-        shift counters.
-  - [ ] admin — region: verifications today (+trend), team accuracy, avg decision
-        time, escalated count, weekly volume `[{day, genuine, suspicious, fake}]`,
-        verifier roster `[{name, checkpoint, online, today, accuracy}]`, flagged cases.
-  - [ ] superadmin — org: #checkpoints, #admins, #verifiers, screenings today,
-        system accuracy, checkpoints table, admins table `[{name, region, team, accuracy}]`.
-- [ ] `GET /api/reports` (admin, region) — doc-type breakdown `[{doc, count}]`,
-      by-checkpoint breakdown `[{checkpoint, verifiers, today}]`, fake-detection rate,
-      weekly volume, avg decision time, escalated cases.
-- [ ] Mongo aggregation pipelines + indexes (`region+created_at`, `officer_id+created_at`,
-      `verdict+created_at`, `officer_decision.decided_at`).
-- [ ] `service/analytics_service.go` — one place for all aggregations; cache the
-      heavier org rollups (short TTL) if slow.
-- [ ] Tests — seeded screenings → expected counts, region isolation, verdict split.
+      verdict band (accept↔GENUINE, escalate↔SUSPICIOUS, reject↔FAKE). **Still needs
+      sign-off** — not implemented; the UI no longer shows an accuracy stat (swapped
+      for "Decision Rate" = decided/total).
+- [x] `GET /api/dashboard/summary` — role-aware, `middleware.Principal` drives scope:
+  - [x] verifier — `screenings_today/total`, `verdict_split`, `pending_decisions`,
+        `decided_today`, `weekly_volume`. (UI: compact "Today's Shift" card on the
+        verifier dashboard.)
+  - [x] admin — region-scoped, plus `verifier_activity` / `checkpoint_activity`
+        (`[{id, today, total}]`, UI joins names from `/users`), `flagged_cases` (≤8,
+        undecided + non-genuine / blacklist-hit), `avg_decision_seconds`, `escalated`.
+  - [x] superadmin — org-wide, plus `totals {checkpoints, admins, verifiers}`,
+        `checkpoint_activity`, `flagged_cases`.
+- [x] `GET /api/reports` (admin = own region fail-closed, superadmin = org or
+      `?region=`) — `doc_type_breakdown [{doc_type, count}]`, `checkpoint_breakdown
+      [{id, today, total}]` (verifier headcount joined from `/users` in the SPA),
+      `fake_rate`, `weekly_volume`, `avg_decision_seconds`, `escalated`.
+- [x] Mongo aggregation — one `$facet` per endpoint through new
+      `ScreeningRepository.Aggregate(pipeline)`; scope `$match` on
+      `officer_id`/`region` rides the existing `*_created` indexes. No new index.
+- [x] `service/analytics_service.go` — single home for every aggregation; no
+      caching yet (facet is one round trip, demo data is small).
+- [x] Tests — `analytics_service_test.go` (verifier scope, admin region isolation,
+      verdict split, flagged shape, reports doc-type + fake rate). mongo-backed.
+- [ ] Deferred — timezone-aware day boundaries (UTC for now), per-verifier accuracy,
+      trend deltas, caching org rollups.
 
 ## Phase F — Face verification (PS Module 4 — UI verifier dashboard card)
 - [ ] `internal/face` — `FaceEngine` interface (mirrors `screening.Engine`) +
@@ -379,8 +394,9 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 ## Phase G — Audit read API + expanded actions  (UI: admin AuditLog, superadmin AuditTrail)
 - [x] `AuditRepository.List(ctx, filter, cursor, limit)` *(done 2026-09-07 as `List`,
       not `Find`)* — additive, repo stays Insert-only otherwise (no update/delete).
-- [ ] `model/audit.go` — new action constants: `user.role_changed`,
-      `user.updated`, `user.disabled`, `org.settings_updated`. *(`auth.login`,
+- [~] `model/audit.go` — new action constants: `user.role_changed`,
+      `user.updated`, `user.disabled` **added (2026-09-08, Phase H)**;
+      `org.settings_updated` still pending (Phase J). *(`auth.login`,
       `user.password_reset`, `user.password_changed`, `checkpoint.created`,
       `checkpoint.updated` already existed pre-Phase G.)*
 - [ ] Denormalise `actor_name` onto each `AuditLog` at write time (UI lists the actor's
@@ -391,27 +407,36 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
       Filters implemented: `?action=`, `?region=`. **Not yet implemented:**
       `?category=decision|user|login`, `?actor=`, `?reference_type=`, `?reference_id=`.
       Cursor-paginated, newest first.
-- [ ] Wire the new audit writes into user update / role change / disable / settings
-      services. *(Checkpoint create/update already write audit entries — region-stamped
-      as of 2026-09-07.)*
+- [~] Wire the new audit writes into user update / role change / disable / settings
+      services. **User update / role change / disable done (2026-09-08, Phase H).**
+      Settings still pending (Phase J). *(Checkpoint create/update already write audit
+      entries — region-stamped as of 2026-09-07.)*
 - [ ] Tests — filter by category, region isolation, append-only invariant. *(No test
       file added with the 2026-09-07 commit — still open.)*
 
-## Phase H — User management (UI: admin Verifiers, superadmin Admins)
-- [~] `GET /api/users?role=&region=&status=` — region scoping done 2026-09-07
-      (`UserFilter.Region`, admin auto-scoped by `middleware.RegionScope`, fail-closed
-      if unset; superadmin can pass `?region=`). **Still missing:** `role=` / `status=`
-      query filters.
-- [ ] `PATCH /api/users/:id` — update `checkpoint_id`, `region`, `status`
-      (enable/disable). Role change is **superadmin only**. Audit `user.updated` /
-      `user.role_changed` / `user.disabled`.
-- [ ] Verifier/admin detail drawer data — recent screenings (reuse
-      `GET /api/screenings?officer_id=`), today count + accuracy (from analytics),
-      `member since` (already `created_at` in `UserView`), checkpoints managed
-      (for an admin: `GET /api/checkpoints?admin_id=`).
-- [ ] `POST /api/users` — already exists; extend to take `region` / `checkpoint_id`
-      and enforce the creator's scope (admin can only create verifiers in own region).
-- [ ] Tests — scope enforcement on create/list/patch, disable blocks login (existing).
+## Phase H — User management (UI: admin Verifiers, superadmin Admins)  *(done 2026-09-08)*
+- [x] `GET /api/users?role=&status=` — `UserFilter` gained `Role` / `Status`; region
+      scoping was already there (2026-09-07). Shared `userQuery()` builds the match
+      for both `List` and the new `CountBy` (used by the superadmin totals).
+- [x] `PATCH /api/users/:id` — `model.UpdateUserInput` (nil pointer = unchanged).
+      `UserService.Update`: super admin edits anyone; admin edits **only a verifier
+      in their own region** and can never change a role; a role change re-derives the
+      scope for the new role. Self-guard: no self-disable / self-role-change →
+      `CANNOT_MODIFY_SELF` (30007). New `UserRepository.Update(set)`. Audit
+      `user.role_changed` / `user.disabled` / `user.updated` (most-specific wins).
+- [x] Frontend — `Verifiers` drawer: status toggle + checkpoint `<Select>` reassign.
+      `Admins` drawer: status toggle + region (`datalist`) + role `<Select>`.
+      `features/users` `updateUser` / `useUpdateUser` (invalidates `users` +
+      `dashboard-summary`). `features/audit/format.js` learns the 3 new actions.
+- [x] Detail drawer data — recent screenings already wired (`GET /api/screenings`
+      client-filtered by `officer_id`); `member since` = `created_at`; checkpoints
+      managed already shown for admins. Per-verifier accuracy still deferred with
+      Phase E accuracy %.
+- [x] Tests — `user_update_test.go` (admin disables in-region + audit, admin blocked
+      cross-region & on role change, superadmin reassigns checkpoint, superadmin
+      promotes verifier→admin with region, self-disable rejected). mongo-backed.
+- [ ] Deferred — `POST /api/users` scope-enforcement tightening (admin creating only
+      in own region) is a separate follow-up; `PATCH` covers the demo need.
 
 ## Phase I — Presence / online status  *(low priority — UI shows online/offline dots)*
 - [ ] `User.LastActiveAt` — bumped by a throttled touch in `Authenticate` (once/min) or
@@ -433,7 +458,15 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 - [ ] Role-permissions matrix in the UI is static documentation — no endpoint.
 
 ## Phase K — Contract alignment & frontend wiring
-- [ ] `CORS_ALLOW_ORIGINS` — add the Vite dev origin (`http://localhost:5173`).
+- [~] `CORS_ALLOW_ORIGINS` — dev default is `*` (Vite origin already works);
+      `.env.example` now documents `http://localhost:5173` for a locked-down setup.
+- [x] **Auto doc-type** *(2026-09-08)* — `POST /api/screenings` `doc_type` is now
+      optional. `Submit` only rejects a *non-empty invalid* value; the engine gets
+      `auto`, returns its classification (`ScreenResult.DocType`,
+      `docTypeFromParam`), and the service persists it via `SetResult(…, docType)`
+      when the officer left it blank (`officer ▸ model ▸ passport` fallback).
+      `MockEngine` classifies deterministically. Verifier "Screen Document" UI
+      dropped the type selector.
 - [ ] Reference number — backend `SCR-<yyyymmdd>-<00001>` stays; UI mock uses
       `SC-88291`. Frontend adopts the real format (no backend change).
 - [ ] `ScreeningView` final review against UI field expectations — `risk_score` 0–100,

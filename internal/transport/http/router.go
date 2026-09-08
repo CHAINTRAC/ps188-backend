@@ -31,6 +31,7 @@ type Deps struct {
 	Blacklist   *service.BlacklistService
 	Checkpoints *service.CheckpointService
 	Audit       *service.AuditService
+	Analytics   *service.AnalyticsService
 }
 
 // NewRouter builds the fully-wired gin.Engine.
@@ -56,6 +57,7 @@ func NewRouter(d Deps) *gin.Engine {
 	blH := &blacklistHandler{blacklist: d.Blacklist}
 	cpH := &checkpointHandler{checkpoints: d.Checkpoints}
 	auH := &auditHandler{audit: d.Audit}
+	anH := &analyticsHandler{analytics: d.Analytics}
 
 	authed := middleware.Authenticate(d.JWT)
 	// admin-level routes are open to both admin and super admin.
@@ -74,6 +76,7 @@ func NewRouter(d Deps) *gin.Engine {
 		users.POST("/change-password", userH.changePassword)
 		users.POST("", admin, userH.create)
 		users.GET("", admin, userH.list)
+		users.PATCH("/:id", admin, userH.update)
 		users.POST("/:id/reset-password", admin, userH.resetPassword)
 
 		scr := api.Group("/screenings", authed)
@@ -98,6 +101,11 @@ func NewRouter(d Deps) *gin.Engine {
 
 		au := api.Group("/audit-logs", authed)
 		au.GET("", auH.list) // all three roles — ScopeAuditToActor decides what each sees
+
+		dash := api.Group("/dashboard", authed)
+		dash.GET("/summary", anH.dashboardSummary) // role-aware inside the service
+
+		api.GET("/reports", authed, admin, anH.reports)
 	}
 	return r
 }

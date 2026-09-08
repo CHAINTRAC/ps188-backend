@@ -194,7 +194,9 @@ func TestScreeningService_Submit_EngineDown_PersistsFailed(t *testing.T) {
 		Err: apperr.ERRORS.ScreeningEngineUnavailable,
 	})
 
-	view, err := svc.Submit(context.Background(), submitInput())
+	in := submitInput()
+	in.DocType = "" // officer left it to the model, which is now unreachable
+	view, err := svc.Submit(context.Background(), in)
 	if err != nil {
 		t.Fatalf("submit should not fail hard: %v", err)
 	}
@@ -203,6 +205,9 @@ func TestScreeningService_Submit_EngineDown_PersistsFailed(t *testing.T) {
 	}
 	if view.FailureReason == "" {
 		t.Fatal("expected a failure reason")
+	}
+	if !view.DocType.Valid() {
+		t.Fatalf("doc_type must never be blank, even on a failed run — got %q", view.DocType)
 	}
 
 	// The case is retrievable and carries the failure.
@@ -220,6 +225,24 @@ func TestScreeningService_Submit_InvalidDocType(t *testing.T) {
 	_, err := svc.Submit(context.Background(), in)
 	if ae := apperr.From(err); ae == nil || ae.Code != apperr.ERRORS.InvalidDocType.Code {
 		t.Fatalf("want InvalidDocType, got %v", err)
+	}
+}
+
+func TestScreeningService_Submit_AutoDocType(t *testing.T) {
+	// No doc type from the officer — the engine classifies one and it is persisted.
+	svc := newScreeningSvc(t, &screening.MockEngine{Force: model.VerdictGenuine})
+	in := submitInput()
+	in.DocType = ""
+
+	view, err := svc.Submit(context.Background(), in)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if view.Status != model.StatusCompleted {
+		t.Fatalf("status = %q", view.Status)
+	}
+	if !view.DocType.Valid() {
+		t.Fatalf("doc_type not classified: %q", view.DocType)
 	}
 }
 

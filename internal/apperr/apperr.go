@@ -99,6 +99,7 @@ var ERRORS = struct {
 	InvalidRole            *AppError
 	InvalidCurrentPassword *AppError
 	MissingScopeField      *AppError
+	CannotModifySelf       *AppError
 
 	// screenings (4xxxx)
 	ScreeningNotFound     *AppError
@@ -155,6 +156,7 @@ var ERRORS = struct {
 	InvalidRole:            def("Unknown role", 30004, 422),
 	InvalidCurrentPassword: def("Current password is incorrect", 30005, 401),
 	MissingScopeField:      def("This role requires a region (admin) or checkpoint (verifier)", 30006, 422),
+	CannotModifySelf:       def("You cannot change your own role or disable your own account", 30007, 403),
 
 	ScreeningNotFound:     def("Screening not found", 40001, 404),
 	AlreadyDecided:        def("This screening already has an officer decision", 40002, 409),

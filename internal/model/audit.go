@@ -12,6 +12,9 @@ const CollAuditLogs = "audit_logs"
 // Audit action constants — one per state-changing operation.
 const (
 	ActionUserCreated          = "user.created"
+	ActionUserUpdated          = "user.updated"
+	ActionUserRoleChanged      = "user.role_changed"
+	ActionUserDisabled         = "user.disabled"
 	ActionUserPasswordChanged  = "user.password_changed"
 	ActionUserPasswordReset    = "user.password_reset"
 	ActionAuthLogin            = "auth.login"

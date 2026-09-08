@@ -24,6 +24,9 @@ type CheckpointRepository interface {
 	Update(ctx context.Context, code string, set bson.M) (*model.Checkpoint, error)
 	// RegionExists reports whether at least one checkpoint is registered in region.
 	RegionExists(ctx context.Context, region string) (bool, error)
+	// Count returns the number of checkpoints, optionally scoped to a region
+	// (empty region = all). Used for the super-admin dashboard totals.
+	Count(ctx context.Context, region string) (int64, error)
 }
 
 type mongoCheckpointRepo struct {
@@ -105,6 +108,18 @@ func (r *mongoCheckpointRepo) Update(ctx context.Context, code string, set bson.
 		return nil, apperr.ERRORS.DatabaseError.Wrap(err)
 	}
 	return &c, nil
+}
+
+func (r *mongoCheckpointRepo) Count(ctx context.Context, region string) (int64, error) {
+	q := bson.M{}
+	if region != "" {
+		q["region"] = region
+	}
+	n, err := r.coll.CountDocuments(ctx, q)
+	if err != nil {
+		return 0, apperr.ERRORS.DatabaseError.Wrap(err)
+	}
+	return n, nil
 }
 
 func (r *mongoCheckpointRepo) RegionExists(ctx context.Context, region string) (bool, error) {

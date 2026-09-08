@@ -119,7 +119,8 @@ Access token TTL `JWT_ACCESS_TTL` (default 1h); refresh `JWT_REFRESH_TTL` (defau
 |---|---|---|---|
 | GET | `/profile` | any authed | Own `UserView` (incl. `region`, `checkpoint_id`) |
 | POST | `/` | admin / superadmin | Create a user: `{username, full_name, email, password, role, region?, checkpoint_id?}`. `checkpoint_id` is **required for a verifier** (region resolved from it); `region` is **required for an admin** (must exist in the registry). `USERNAME_TAKEN` / `EMAIL_TAKEN` on conflict, `INVALID_ROLE` for an unknown role, `MISSING_SCOPE_FIELD` (30006), `UNKNOWN_REGION` (80004). Audit: `user.created`. |
-| GET | `/` | admin / superadmin | Cursor-paginated `UserView[]` |
+| GET | `/` | admin / superadmin | Cursor-paginated `UserView[]`. Region auto-scoped (admin = own region, fail-closed if unset; superadmin org-wide or `?region=`). Extra filters `?role=&status=`. |
+| PATCH | `/:id` | admin / superadmin | Update `status` (enable/disable), scope (`checkpoint_id` for a verifier, `region` for an admin), or `role`. **Role change is superadmin-only**; changing a role re-derives the scope for the new role (checkpoint required for verifier, region for admin, both cleared for superadmin). An admin may edit **only a verifier in their own region**. Nobody may disable their own account or change their own role → `CANNOT_MODIFY_SELF` (30007). `FORBIDDEN` (20006), `MISSING_SCOPE_FIELD` (30006), `UNKNOWN_REGION` (80004). Audit: `user.role_changed` / `user.disabled` / `user.updated` (most-specific wins). |
 | POST | `/change-password` | any authed | `{current_password, new_password}` — verifies current, rehashes. `INVALID_CURRENT_PASSWORD` (30005). Audit: `user.password_changed`. |
 | POST | `/:id/reset-password` | admin / superadmin | Admin resets a `verifier` in their own region; superadmin resets anyone. Returns `{temp_password}`. `FORBIDDEN` (20006) out of scope. Audit: `user.password_reset`. |
 
@@ -130,7 +131,7 @@ engine's result + (optionally) an officer's decision.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `holder_name`, `dob`, `nationality`, `expiry_date`. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5 — includes the post-engine blacklist + expiry checks that populate `flags[]` / `blacklist_matches[]`. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
+| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + optional `doc_type`, `doc_number`, `mrz_line1`, `mrz_line2`, `holder_name`, `dob`, `nationality`, `expiry_date`. **`doc_type` is optional** — omit it and the model classifies the document; the officer's explicit value (if given and valid) still wins, and `passport` is the last-resort fallback. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5 — includes the post-engine blacklist + expiry checks that populate `flags[]` / `blacklist_matches[]`. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
 | GET | `/` | any authed | List. **Auto-scoped** by `middleware.ScopeToActor`: verifier → own `officer_id` (UI "My History"), admin → own `region`, super admin → unscoped. Extra filters `?verdict=&doc_type=&status=&checkpoint_id=&decided=false&decision=`. Cursor-paginated, newest first. "Flagged for review" (admin dashboard) = `?verdict=SUSPICIOUS` (or `FAKE`) `&decided=false` — no dedicated route. |
 | GET | `/:id` | any authed | Full detail incl. `engine.evidence` (the explainability table) and `engine.reasons`. |
 | GET | `/:id/image` | any authed | Streams the stored document image (via `FileStore` — local disk by default, GridFS if configured), `Content-Type` sniffed. |
@@ -172,15 +173,33 @@ id stamped on users and screenings; `region` is authoritative here.
 `CheckpointService.Resolve(code) → region` and `RegionExists(region)` back the
 user-create validation above.
 
+### 4.7 Analytics — `/api/dashboard/summary` + `/api/reports`  (all require auth)
+
+`service/analytics_service.go` is the single home for every dashboard / report
+aggregation. It reads through `ScreeningRepository.Aggregate(pipeline)` (one
+`$facet` per endpoint — one round trip) plus plain counts for the org totals, and
+never writes. All day boundaries are **UTC** (deferred: timezone-aware).
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/dashboard/summary` | any authed | **Role-aware** — the service reads the principal's role/region and scopes every number. Common fields: `screenings_today` / `screenings_total`, `decided_today` / `decided_total`, `pending_decisions`, `escalated`, `avg_decision_seconds`, `verdict_split {genuine,suspicious,fake}`, `weekly_volume [{date,day,genuine,suspicious,fake}]` (last 7 UTC days). Verifier → own screenings only. Admin → region, plus `verifier_activity` / `checkpoint_activity` (`[{id,today,total}]`) and `flagged_cases` (undecided + non-genuine / blacklist-hit, ≤8). Superadmin → org, plus `totals {checkpoints,admins,verifiers}`, `checkpoint_activity`, `flagged_cases`. |
+| GET | `/reports` | admin / superadmin | Admin = own region (fail-closed if unset); superadmin = org-wide or `?region=`. `total_screenings`, `fake_rate` (percent, 1 dp), `escalated`, `avg_decision_seconds`, `weekly_volume`, `doc_type_breakdown [{doc_type,count}]`, `checkpoint_breakdown [{id,today,total}]`. Verifier headcount per checkpoint is org-structure data — the SPA joins it from `GET /users`. |
+
+Accuracy % (team / verifier / system) is **deliberately not implemented** — its
+definition is unsigned-off (see `todo.md` Phase E).
+
 ### 4.5 Audit trail (internal)
 
 `audit_logs` is written by services on every state-changing operation
-(`auth.login`, `user.created`, `user.password_changed`, `user.password_reset`,
+(`auth.login`, `user.created`, `user.updated`, `user.role_changed`,
+`user.disabled`, `user.password_changed`, `user.password_reset`,
 `screening.submitted`, `screening.decided`, `blacklist.added`,
 `blacklist.deactivated`, `checkpoint.created`, `checkpoint.updated`) with
 `old_data`/`new_data` snapshots and the actor's IP. **Append-only** —
-`AuditRepository` exposes `Insert` only. A read API (`GET /api/audit-logs`, admin)
-is a planned addition (§8), not in the current slice.
+`AuditRepository` exposes `Insert` and `List` (no update/delete). The read API
+`GET /api/audit-logs` is scoped per role by `middleware.ScopeAuditToActor`
+(verifier = own `user_id`, admin = own region fail-closed, superadmin = org-wide),
+cursor-paginated newest first, filters `?action=&region=`.
 
 ---
 
@@ -190,7 +209,7 @@ is a planned addition (§8), not in the current slice.
         POST /api/screenings   (verifier, multipart image)
                     │
                     ▼
-     ┌─ validate doc_type, file type & size ─┐  → 4xx / 5xx, nothing stored
+     ┌─ validate file type & size (doc_type optional) ─┐  → 4xx / 5xx, nothing stored
                     │
                     ▼
         store image via FileStore (local disk by default, or GridFS)  →  image_file_id
@@ -210,7 +229,8 @@ is a planned addition (§8), not in the current slice.
    SetResult(                SetResult(
      status: failed,           status: completed,
      verdict: PENDING,         verdict: <GENUINE|SUSPICIOUS|FAKE|INSUFFICIENT_IMAGE_QUALITY>,
-     failure_reason: …)        risk_score, engine.evidence, engine.reasons, extracted_fields)
+     failure_reason: …)        risk_score, engine.evidence, engine.reasons, extracted_fields,
+                               doc_type (officer's ▸ model's ▸ passport))
         │                         │
         └───────────┬─────────────┘
                     ▼
@@ -263,7 +283,8 @@ is a planned addition (§8), not in the current slice.
 ```
 POST {SCREENING_SERVICE_URL}/api/v1/verify       multipart/form-data
   image=<file>
-  doc_type=passport | aadhaar | auto           (national_id → aadhaar; others → auto)
+  doc_type=passport | aadhaar | auto           (national_id → aadhaar; empty / others → auto —
+                                               the model then classifies and returns doc_type)
   doc_number=<string>        (optional)
   mrz_line1=<string>         (optional, passports)
   mrz_line2=<string>         (optional, passports)
@@ -284,6 +305,9 @@ POST {SCREENING_SERVICE_URL}/api/v1/verify       multipart/form-data
 4xx/5xx → { "success": false, "error": { "code": "MODEL_UNAVAILABLE", "message": "..." } }
 ```
 
+- **`doc_type`** — the model's classification, mapped back onto our `DocType` by
+  `docTypeFromParam` (`aadhaar → national_id`, etc.). The screening service persists
+  it only when the officer left the type blank.
 - **`extracted_fields`** (Phase D) — `[]ExtractedField{Label, Value, Confidence}`.
   `parseExtractedFields` also accepts a plain `{label: value}` object (sorted by
   label). Absent → `nil`; the raw `evidence_table` is always kept verbatim as
@@ -320,7 +344,7 @@ the rest of the backend already carries all five `DocType`s.
 
 | Range | Domain | Examples |
 |---|---|---|
-| 3xxxx | Users | `USER_NOT_FOUND` 30001·404, `USERNAME_TAKEN` 30002·409, `EMAIL_TAKEN` 30003·409, `INVALID_ROLE` 30004·422, `INVALID_CURRENT_PASSWORD` 30005·401, `MISSING_SCOPE_FIELD` 30006·422 |
+| 3xxxx | Users | `USER_NOT_FOUND` 30001·404, `USERNAME_TAKEN` 30002·409, `EMAIL_TAKEN` 30003·409, `INVALID_ROLE` 30004·422, `INVALID_CURRENT_PASSWORD` 30005·401, `MISSING_SCOPE_FIELD` 30006·422, `CANNOT_MODIFY_SELF` 30007·403 |
 | 4xxxx | Screenings | `SCREENING_NOT_FOUND` 40001·404, `ALREADY_DECIDED` 40002·409, `INVALID_DOC_TYPE` 40003·422, `SCREENING_NOT_COMPLETED` 40004·409, `INVALID_DECISION` 40005·422 |
 | 5xxxx | Files / storage | `FILE_REQUIRED` 50001·400, `FILE_TOO_LARGE` 50002·413, `INVALID_FILE_TYPE` 50003·422, `STORAGE_FAILED` 50004·500 |
 | 6xxxx | External screening engine | `SCREENING_ENGINE_UNAVAILABLE` 60001·502, `SCREENING_ENGINE_BAD_RESPONSE` 60002·502 |
@@ -340,8 +364,8 @@ vertical slice per the guide's checklist.
 |---|---|
 | **Face Verification** (`/api/screenings/:id/face`, PS Module 4) | Officer captures a live photo; a `FaceEngine` (interface, like `screening.Engine`) compares it to the document portrait; result appended to the screening as `face_verification { score, matched, captured_image_file_id }`. |
 | **Cases** (`/api/cases`) | Group multiple screenings of the same traveller (multiple-identity detection); investigator notes; export. |
-| **Audit read API** (`GET /api/audit-logs`, admin) | Paginated, filters `?action=&reference_type=&reference_id=`. Repo stays `Insert`-only; a `Find` method is additive. |
-| **Dashboard** (`/api/dashboard/summary`) | Aggregate counts (screenings today, by verdict, pending decisions, engine failures 24h) — single aggregation queries. |
+| **Reports — extended** (`/api/reports`) | Core breakdowns shipped (§4.7). Deferred: fake-detection trend lines, avg decision time per verifier, engine-failure rate. |
+| **Analytics accuracy %** | Team / verifier / system accuracy — needs a signed-off definition (engine verdict band vs. officer decision agreement) before it ships. |
 | **Async screening** | If the model gets slow, `Submit` returns `202` with `status=processing` immediately and a worker calls the engine; the lifecycle diagram already accommodates this. |
 
 ---

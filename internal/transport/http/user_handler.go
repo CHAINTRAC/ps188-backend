@@ -34,7 +34,11 @@ func (h *userHandler) create(c *gin.Context) {
 func (h *userHandler) list(c *gin.Context) {
 	cursor, limit := pageParams(c)
 	actor, _ := middleware.Principal(c)
-	filter := model.UserFilter{Region: middleware.RegionScope(actor)}
+	filter := model.UserFilter{
+		Region: middleware.RegionScope(actor),
+		Role:   model.Role(c.Query("role")),
+		Status: model.UserStatus(c.Query("status")),
+	}
 	if filter.Region == "" {
 		if actor.Role == string(model.RoleAdmin) {
 			filter.Deny = true // misconfigured account — fail closed, not unscoped
@@ -53,6 +57,21 @@ func (h *userHandler) list(c *gin.Context) {
 		return
 	}
 	response.Paginated(c, page, "Users")
+}
+
+func (h *userHandler) update(c *gin.Context) {
+	var in model.UpdateUserInput
+	if err := validate.BindJSON(c, &in); err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	actor, _ := middleware.Principal(c)
+	view, err := h.users.Update(c.Request.Context(), actor, c.ClientIP(), c.Param("id"), in)
+	if err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	response.Success(c, nethttp.StatusOK, view, "User updated")
 }
 
 func (h *userHandler) profile(c *gin.Context) {
