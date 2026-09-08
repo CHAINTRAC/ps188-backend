@@ -460,6 +460,13 @@ Phases are ordered by dependency. A–C unblock everything; do them first.
 ## Phase K — Contract alignment & frontend wiring
 - [~] `CORS_ALLOW_ORIGINS` — dev default is `*` (Vite origin already works);
       `.env.example` now documents `http://localhost:5173` for a locked-down setup.
+- [x] **Auto doc-type** *(2026-09-08)* — `POST /api/screenings` `doc_type` is now
+      optional. `Submit` only rejects a *non-empty invalid* value; the engine gets
+      `auto`, returns its classification (`ScreenResult.DocType`,
+      `docTypeFromParam`), and the service persists it via `SetResult(…, docType)`
+      when the officer left it blank (`officer ▸ model ▸ passport` fallback).
+      `MockEngine` classifies deterministically. Verifier "Screen Document" UI
+      dropped the type selector.
 - [ ] Reference number — backend `SCR-<yyyymmdd>-<00001>` stays; UI mock uses
       `SC-88291`. Frontend adopts the real format (no backend change).
 - [ ] `ScreeningView` final review against UI field expectations — `risk_score` 0–100,

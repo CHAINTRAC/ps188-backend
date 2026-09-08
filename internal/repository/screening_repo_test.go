@@ -153,7 +153,7 @@ func TestScreeningRepository_SetChecks(t *testing.T) {
 
 	// Give it an engine result so the reason append has somewhere to land.
 	eng := &model.EngineResult{Verdict: model.VerdictGenuine, RiskScore: 0.1, Reasons: []string{"looks clean"}}
-	if _, err := repo.SetResult(ctx, id, model.StatusCompleted, model.VerdictGenuine, 0.1, eng, ""); err != nil {
+	if _, err := repo.SetResult(ctx, id, model.StatusCompleted, model.VerdictGenuine, 0.1, eng, "", model.DocPassport); err != nil {
 		t.Fatalf("set result: %v", err)
 	}
 

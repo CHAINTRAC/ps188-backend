@@ -131,7 +131,7 @@ engine's result + (optionally) an officer's decision.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + `doc_type` + optional `doc_number`, `mrz_line1`, `mrz_line2`, `holder_name`, `dob`, `nationality`, `expiry_date`. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5 — includes the post-engine blacklist + expiry checks that populate `flags[]` / `blacklist_matches[]`. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
+| POST | `/` | verifier | **Submit.** `multipart/form-data`: `document` (JPEG/PNG, ≤ `MAX_UPLOAD_BYTES`) + optional `doc_type`, `doc_number`, `mrz_line1`, `mrz_line2`, `holder_name`, `dob`, `nationality`, `expiry_date`. **`doc_type` is optional** — omit it and the model classifies the document; the officer's explicit value (if given and valid) still wins, and `passport` is the last-resort fallback. `checkpoint_id` and `region` come from the verifier's token (stamped at account creation), not the form. Flow in §5 — includes the post-engine blacklist + expiry checks that populate `flags[]` / `blacklist_matches[]`. Returns the `ScreeningView` (status `completed` or `failed`). Audit: `screening.submitted`. |
 | GET | `/` | any authed | List. **Auto-scoped** by `middleware.ScopeToActor`: verifier → own `officer_id` (UI "My History"), admin → own `region`, super admin → unscoped. Extra filters `?verdict=&doc_type=&status=&checkpoint_id=&decided=false&decision=`. Cursor-paginated, newest first. "Flagged for review" (admin dashboard) = `?verdict=SUSPICIOUS` (or `FAKE`) `&decided=false` — no dedicated route. |
 | GET | `/:id` | any authed | Full detail incl. `engine.evidence` (the explainability table) and `engine.reasons`. |
 | GET | `/:id/image` | any authed | Streams the stored document image (via `FileStore` — local disk by default, GridFS if configured), `Content-Type` sniffed. |
@@ -209,7 +209,7 @@ cursor-paginated newest first, filters `?action=&region=`.
         POST /api/screenings   (verifier, multipart image)
                     │
                     ▼
-     ┌─ validate doc_type, file type & size ─┐  → 4xx / 5xx, nothing stored
+     ┌─ validate file type & size (doc_type optional) ─┐  → 4xx / 5xx, nothing stored
                     │
                     ▼
         store image via FileStore (local disk by default, or GridFS)  →  image_file_id
@@ -229,7 +229,8 @@ cursor-paginated newest first, filters `?action=&region=`.
    SetResult(                SetResult(
      status: failed,           status: completed,
      verdict: PENDING,         verdict: <GENUINE|SUSPICIOUS|FAKE|INSUFFICIENT_IMAGE_QUALITY>,
-     failure_reason: …)        risk_score, engine.evidence, engine.reasons, extracted_fields)
+     failure_reason: …)        risk_score, engine.evidence, engine.reasons, extracted_fields,
+                               doc_type (officer's ▸ model's ▸ passport))
         │                         │
         └───────────┬─────────────┘
                     ▼
@@ -282,7 +283,8 @@ cursor-paginated newest first, filters `?action=&region=`.
 ```
 POST {SCREENING_SERVICE_URL}/api/v1/verify       multipart/form-data
   image=<file>
-  doc_type=passport | aadhaar | auto           (national_id → aadhaar; others → auto)
+  doc_type=passport | aadhaar | auto           (national_id → aadhaar; empty / others → auto —
+                                               the model then classifies and returns doc_type)
   doc_number=<string>        (optional)
   mrz_line1=<string>         (optional, passports)
   mrz_line2=<string>         (optional, passports)
@@ -303,6 +305,9 @@ POST {SCREENING_SERVICE_URL}/api/v1/verify       multipart/form-data
 4xx/5xx → { "success": false, "error": { "code": "MODEL_UNAVAILABLE", "message": "..." } }
 ```
 
+- **`doc_type`** — the model's classification, mapped back onto our `DocType` by
+  `docTypeFromParam` (`aadhaar → national_id`, etc.). The screening service persists
+  it only when the officer left the type blank.
 - **`extracted_fields`** (Phase D) — `[]ExtractedField{Label, Value, Confidence}`.
   `parseExtractedFields` also accepts a plain `{label: value}` object (sorted by
   label). Absent → `nil`; the raw `evidence_table` is always kept verbatim as

@@ -22,7 +22,10 @@ type ScreenRequest struct {
 // ScreenResult mirrors the FastAPI verify response. RiskScore stays on the
 // model's native 0.0–1.0 scale; the API layer converts to 0–100.
 type ScreenResult struct {
-	Verdict         model.Verdict
+	Verdict model.Verdict
+	// DocType is the document type the model identified (empty if it did not
+	// classify one). The caller uses it when the officer did not pick a type.
+	DocType         model.DocType
 	RiskScore       float64
 	Reasons         []string
 	ExtractedFields []model.ExtractedField

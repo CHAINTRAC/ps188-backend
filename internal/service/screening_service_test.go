@@ -223,6 +223,24 @@ func TestScreeningService_Submit_InvalidDocType(t *testing.T) {
 	}
 }
 
+func TestScreeningService_Submit_AutoDocType(t *testing.T) {
+	// No doc type from the officer — the engine classifies one and it is persisted.
+	svc := newScreeningSvc(t, &screening.MockEngine{Force: model.VerdictGenuine})
+	in := submitInput()
+	in.DocType = ""
+
+	view, err := svc.Submit(context.Background(), in)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if view.Status != model.StatusCompleted {
+		t.Fatalf("status = %q", view.Status)
+	}
+	if !view.DocType.Valid() {
+		t.Fatalf("doc_type not classified: %q", view.DocType)
+	}
+}
+
 func TestScreeningService_Decide_OncePerScreening(t *testing.T) {
 	svc := newScreeningSvc(t, &screening.MockEngine{Force: model.VerdictFake})
 	ctx := context.Background()

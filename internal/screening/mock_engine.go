@@ -47,9 +47,21 @@ func (m *MockEngine) Screen(_ context.Context, req ScreenRequest) (*ScreenResult
 		fields = append(fields, model.ExtractedField{Label: "mrz_line1", Value: req.MRZLine1, Confidence: 0.9})
 	}
 
+	// Echo the requested type, or "classify" one deterministically when the
+	// caller left it to the engine (auto).
+	docType := req.DocType
+	if docType == "" {
+		if len(req.Image)%2 == 0 {
+			docType = model.DocPassport
+		} else {
+			docType = model.DocNationalID
+		}
+	}
+
 	reasons := []string{"mock screening engine — result derived from image bytes"}
 	return &ScreenResult{
 		Verdict:         verdict,
+		DocType:         docType,
 		RiskScore:       risk,
 		Reasons:         reasons,
 		ExtractedFields: fields,

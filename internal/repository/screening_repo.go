@@ -20,7 +20,9 @@ type ScreeningRepository interface {
 	Create(ctx context.Context, s *model.Screening) (*model.Screening, error)
 	FindByID(ctx context.Context, id string) (*model.Screening, error)
 	List(ctx context.Context, f model.ScreeningFilter, cursor string, limit int64) (response.Page[model.ScreeningView], error)
-	SetResult(ctx context.Context, id string, status model.ScreeningStatus, verdict model.Verdict, risk float64, engine *model.EngineResult, failure string) (*model.Screening, error)
+	// SetResult records the engine outcome. docType, when non-empty, is written
+	// too — the officer may leave the type for the model to classify.
+	SetResult(ctx context.Context, id string, status model.ScreeningStatus, verdict model.Verdict, risk float64, engine *model.EngineResult, failure string, docType model.DocType) (*model.Screening, error)
 	// SetChecks records advisory flags, blacklist matches, and an adjusted risk
 	// score raised during post-engine checks, and appends any extra evidence
 	// reasons onto engine.reasons. Additive — never clears the engine result or
@@ -126,7 +128,7 @@ func (r *mongoScreeningRepo) List(ctx context.Context, f model.ScreeningFilter, 
 		func(s model.Screening) string { return s.ID.Hex() }), nil
 }
 
-func (r *mongoScreeningRepo) SetResult(ctx context.Context, id string, status model.ScreeningStatus, verdict model.Verdict, risk float64, engine *model.EngineResult, failure string) (*model.Screening, error) {
+func (r *mongoScreeningRepo) SetResult(ctx context.Context, id string, status model.ScreeningStatus, verdict model.Verdict, risk float64, engine *model.EngineResult, failure string, docType model.DocType) (*model.Screening, error) {
 	oid, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return nil, apperr.ERRORS.ScreeningNotFound
@@ -140,6 +142,9 @@ func (r *mongoScreeningRepo) SetResult(ctx context.Context, id string, status mo
 	}
 	if engine != nil {
 		set["engine"] = engine
+	}
+	if docType != "" {
+		set["doc_type"] = docType
 	}
 	return r.findOneAndUpdate(ctx, oid, bson.M{"$set": set})
 }

@@ -116,12 +116,32 @@ func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResu
 
 	return &ScreenResult{
 		Verdict:         verdict,
+		DocType:         docTypeFromParam(pr.DocType),
 		RiskScore:       pr.RiskScore,
 		Reasons:         pr.Reasons,
 		ExtractedFields: parseExtractedFields(pr.ExtractedFields),
 		EvidenceItems:   evidence,
 		RawEvidence:     pr.EvidenceTable,
 	}, nil
+}
+
+// docTypeFromParam is the inverse of docTypeParam — it maps the model's
+// classification back onto our DocType. Unknown / "auto" / empty yields "".
+func docTypeFromParam(s string) model.DocType {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "passport":
+		return model.DocPassport
+	case "aadhaar", "aadhar", "national_id":
+		return model.DocNationalID
+	case "visa":
+		return model.DocVisa
+	case "driving_license", "driving-licence", "dl":
+		return model.DocDrivingLicense
+	case "permit":
+		return model.DocPermit
+	default:
+		return ""
+	}
 }
 
 // parseExtractedFields accepts either [{label,value,confidence}, …] or a plain
