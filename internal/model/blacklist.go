@@ -35,13 +35,17 @@ type BlacklistEntry struct {
 	Kind BlacklistKind `bson:"kind"`
 
 	// Document match (Kind == BlacklistDocument). Stored upper-cased, trimmed.
-	DocNumber string `bson:"doc_number,omitempty"`
+	DocNumber string  `bson:"doc_number,omitempty"`
+	DocType   DocType `bson:"doc_type,omitempty"`
 
 	// Identity match (Kind == BlacklistIdentity). Name is stored upper-cased,
 	// trimmed; DOB is an ISO date string (YYYY-MM-DD); Nationality an ISO-3 code.
 	Name        string `bson:"name,omitempty"`
 	DOB         string `bson:"dob,omitempty"`
 	Nationality string `bson:"nationality,omitempty"`
+
+	PhotoFileID bson.ObjectID `bson:"photo_file_id,omitempty"`
+	PhotoName   string        `bson:"photo_name,omitempty"`
 
 	Reason  string `bson:"reason"`
 	Source  string `bson:"source,omitempty"`
@@ -57,9 +61,11 @@ type BlacklistView struct {
 	ID          string        `json:"id"`
 	Kind        BlacklistKind `json:"kind"`
 	DocNumber   string        `json:"doc_number,omitempty"`
+	DocType     DocType       `json:"doc_type,omitempty"`
 	Name        string        `json:"name,omitempty"`
 	DOB         string        `json:"dob,omitempty"`
 	Nationality string        `json:"nationality,omitempty"`
+	PhotoURL    string        `json:"photo_url,omitempty"`
 	Reason      string        `json:"reason"`
 	Source      string        `json:"source,omitempty"`
 	AddedBy     string        `json:"added_by"`
@@ -69,13 +75,19 @@ type BlacklistView struct {
 }
 
 func (b *BlacklistEntry) View() BlacklistView {
+	var photoURL string
+	if !b.PhotoFileID.IsZero() {
+		photoURL = "/api/blacklist/" + b.ID.Hex() + "/photo"
+	}
 	return BlacklistView{
 		ID:          b.ID.Hex(),
 		Kind:        b.Kind,
 		DocNumber:   b.DocNumber,
+		DocType:     b.DocType,
 		Name:        b.Name,
 		DOB:         b.DOB,
 		Nationality: b.Nationality,
+		PhotoURL:    photoURL,
 		Reason:      b.Reason,
 		Source:      b.Source,
 		AddedBy:     b.AddedBy,
@@ -90,17 +102,26 @@ func (b *BlacklistEntry) View() BlacklistView {
 type CreateBlacklistInput struct {
 	Kind        BlacklistKind `json:"kind" binding:"required"`
 	DocNumber   string        `json:"doc_number" binding:"omitempty,max=64"`
+	DocType     DocType       `json:"doc_type" binding:"omitempty"`
 	Name        string        `json:"name" binding:"omitempty,max=120"`
 	DOB         string        `json:"dob" binding:"omitempty,datetime=2006-01-02"`
 	Nationality string        `json:"nationality" binding:"omitempty,max=3"`
 	Reason      string        `json:"reason" binding:"required,min=1,max=1000"`
 	Source      string        `json:"source" binding:"omitempty,max=200"`
+	// Photo is optional and only set by the multipart create path — never bound
+	// from JSON.
+	Photo     []byte `json:"-"`
+	PhotoName string `json:"-"`
 }
 
 // BlacklistFilter narrows a list query. Zero values mean "no filter".
+// Query, when set, matches case-insensitively against doc_number, name, and
+// reason.
 type BlacklistFilter struct {
-	Kind   BlacklistKind
-	Active *bool
+	Kind    BlacklistKind
+	DocType DocType
+	Active  *bool
+	Query   string
 }
 
 // BlacklistProbe is the set of values a screening submission is checked against.

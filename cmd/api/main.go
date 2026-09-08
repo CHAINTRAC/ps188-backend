@@ -90,7 +90,7 @@ func run(log *slog.Logger) error {
 	checkpointSvc := service.NewCheckpointService(checkpointRepo, auditRepo)
 	authSvc := service.NewAuthService(userRepo, auditRepo, jwtMgr)
 	userSvc := service.NewUserService(userRepo, auditRepo, checkpointSvc)
-	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo)
+	blacklistSvc := service.NewBlacklistService(blacklistRepo, auditRepo, fileStore)
 	screeningSvc := service.NewScreeningService(screeningRepo, auditRepo, fileStore, engine, blacklistSvc, log)
 	auditSvc := service.NewAuditService(auditRepo)
 	analyticsSvc := service.NewAnalyticsService(screeningRepo, userRepo, checkpointRepo)

@@ -1,7 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -10,6 +13,7 @@ import (
 	"github.com/sih26/ps188-backend/internal/model"
 	"github.com/sih26/ps188-backend/internal/repository"
 	"github.com/sih26/ps188-backend/internal/response"
+	"github.com/sih26/ps188-backend/internal/storage"
 )
 
 // BlacklistService manages blacklisted document numbers and identities
@@ -17,10 +21,11 @@ import (
 type BlacklistService struct {
 	repo  repository.BlacklistRepository
 	audit repository.AuditRepository
+	files storage.FileStore
 }
 
-func NewBlacklistService(repo repository.BlacklistRepository, audit repository.AuditRepository) *BlacklistService {
-	return &BlacklistService{repo: repo, audit: audit}
+func NewBlacklistService(repo repository.BlacklistRepository, audit repository.AuditRepository, files storage.FileStore) *BlacklistService {
+	return &BlacklistService{repo: repo, audit: audit, files: files}
 }
 
 // BlacklistCheckResult is what Check returns: whether anything matched and the
@@ -35,13 +40,30 @@ func (s *BlacklistService) Add(ctx context.Context, actorID, ip string, in model
 	if !in.Kind.Valid() {
 		return zero, apperr.ERRORS.InvalidBlacklistKind
 	}
+	if strings.TrimSpace(in.Reason) == "" {
+		return zero, apperr.ERRORS.BlacklistFieldsMissing
+	}
+	if in.DocType != "" && !in.DocType.Valid() {
+		return zero, apperr.ERRORS.InvalidDocType
+	}
 
 	entry := &model.BlacklistEntry{
 		Kind:    in.Kind,
+		DocType: in.DocType,
 		Reason:  in.Reason,
 		Source:  in.Source,
 		AddedBy: actorID,
 		Active:  true,
+	}
+
+	if len(in.Photo) > 0 {
+		fileID, err := s.files.Put(ctx, in.PhotoName, bytes.NewReader(in.Photo))
+		if err != nil {
+			return zero, apperr.ERRORS.StorageFailed.Wrap(err)
+		}
+		oid, _ := bson.ObjectIDFromHex(fileID)
+		entry.PhotoFileID = oid
+		entry.PhotoName = in.PhotoName
 	}
 
 	switch in.Kind {
@@ -107,6 +129,21 @@ func (s *BlacklistService) Get(ctx context.Context, id string) (model.BlacklistV
 
 func (s *BlacklistService) List(ctx context.Context, f model.BlacklistFilter, cursor string, limit int64) (response.Page[model.BlacklistView], error) {
 	return s.repo.List(ctx, f, cursor, limit)
+}
+
+// StreamPhoto writes the stored photo for id into w.
+func (s *BlacklistService) StreamPhoto(ctx context.Context, id string, w io.Writer) (string, error) {
+	e, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if e.PhotoFileID.IsZero() {
+		return "", apperr.ERRORS.BlacklistEntryNotFound
+	}
+	if err := s.files.Get(ctx, e.PhotoFileID.Hex(), w); err != nil {
+		return "", apperr.ERRORS.StorageFailed.Wrap(err)
+	}
+	return e.PhotoName, nil
 }
 
 func (s *BlacklistService) Deactivate(ctx context.Context, actorID, ip, id string) (model.BlacklistView, error) {

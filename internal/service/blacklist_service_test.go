@@ -8,15 +8,21 @@ import (
 	"github.com/sih26/ps188-backend/internal/model"
 	"github.com/sih26/ps188-backend/internal/repository"
 	"github.com/sih26/ps188-backend/internal/service"
+	"github.com/sih26/ps188-backend/internal/storage"
 	"github.com/sih26/ps188-backend/internal/testsupport"
 )
 
 func newBlacklistSvc(t *testing.T) *service.BlacklistService {
 	t.Helper()
 	db := testsupport.RequireMongo(t)
+	files, err := storage.NewLocalFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("local file store: %v", err)
+	}
 	return service.NewBlacklistService(
 		repository.NewBlacklistRepository(db),
 		repository.NewAuditRepository(db),
+		files,
 	)
 }
 

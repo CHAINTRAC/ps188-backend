@@ -54,7 +54,7 @@ func NewRouter(d Deps) *gin.Engine {
 	authH := &authHandler{auth: d.Auth}
 	userH := &userHandler{users: d.Users}
 	scrH := &screeningHandler{screenings: d.Screenings, maxUpload: d.Cfg.MaxUploadBytes}
-	blH := &blacklistHandler{blacklist: d.Blacklist}
+	blH := &blacklistHandler{blacklist: d.Blacklist, maxUpload: d.Cfg.MaxUploadBytes}
 	cpH := &checkpointHandler{checkpoints: d.Checkpoints}
 	auH := &auditHandler{audit: d.Audit}
 	anH := &analyticsHandler{analytics: d.Analytics}
@@ -91,6 +91,7 @@ func NewRouter(d Deps) *gin.Engine {
 		bl.POST("", admin, blH.create)
 		bl.GET("", admin, blH.list)
 		bl.GET("/:id", admin, blH.get)
+		bl.GET("/:id/photo", admin, blH.photo)
 		bl.POST("/:id/deactivate", admin, blH.deactivate)
 
 		cp := api.Group("/checkpoints", authed)

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"regexp"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -73,8 +74,19 @@ func (r *mongoBlacklistRepo) List(ctx context.Context, f model.BlacklistFilter, 
 	if f.Kind != "" {
 		filter["kind"] = f.Kind
 	}
+	if f.DocType != "" {
+		filter["doc_type"] = f.DocType
+	}
 	if f.Active != nil {
 		filter["active"] = *f.Active
+	}
+	if q := f.Query; q != "" {
+		rx := bson.M{"$regex": regexp.QuoteMeta(q), "$options": "i"}
+		filter["$or"] = bson.A{
+			bson.M{"doc_number": rx},
+			bson.M{"name": rx},
+			bson.M{"reason": rx},
+		}
 	}
 	if cursor != "" {
 		oid, err := bson.ObjectIDFromHex(cursor)
