@@ -74,3 +74,28 @@ func (m *MockEngine) Screen(_ context.Context, req ScreenRequest) (*ScreenResult
 		},
 	}, nil
 }
+
+func (m *MockEngine) MatchFace(_ context.Context, req FaceMatchRequest) (*FaceMatchResult, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	var sum int
+	for _, b := range req.Selfie {
+		sum += int(b)
+	}
+	for _, b := range req.DocImage {
+		sum += int(b)
+	}
+	isMatch := sum%3 != 0
+	score := 0.82
+	if !isMatch {
+		score = 0.31
+	}
+	msg := "mock face match engine — result derived from image bytes"
+	return &FaceMatchResult{
+		IsMatch:         isMatch,
+		SimilarityScore: score,
+		Threshold:       0.6,
+		Message:         msg,
+	}, nil
+}

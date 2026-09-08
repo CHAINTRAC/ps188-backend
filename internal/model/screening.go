@@ -91,6 +91,15 @@ const (
 	FlagFaceMismatch     = "face_mismatch"
 )
 
+// FaceMatchResult is separate from EngineResult — a distinct external call
+// with its own inputs (live selfie vs. the document's own photo).
+type FaceMatchResult struct {
+	IsMatch         bool    `bson:"is_match" json:"is_match"`
+	SimilarityScore float64 `bson:"similarity_score" json:"similarity_score"`
+	Threshold       float64 `bson:"threshold" json:"threshold"`
+	Message         string  `bson:"message,omitempty" json:"message,omitempty"`
+}
+
 // BlacklistMatch is a compact record of one blacklist entry a screening matched,
 // embedded on the screening for the officer's review and the audit trail.
 type BlacklistMatch struct {
@@ -216,11 +225,12 @@ type Screening struct {
 	MRZLine2        string            `bson:"mrz_line2,omitempty"`
 	SubmittedFields map[string]string `bson:"submitted_fields,omitempty"`
 
-	Status  ScreeningStatus `bson:"status"`
-	Verdict Verdict         `bson:"verdict"`
-	Risk    float64         `bson:"risk_score"`
-	Engine  *EngineResult   `bson:"engine,omitempty"`
-	Failure string          `bson:"failure_reason,omitempty"`
+	Status    ScreeningStatus  `bson:"status"`
+	Verdict   Verdict          `bson:"verdict"`
+	Risk      float64          `bson:"risk_score"`
+	Engine    *EngineResult    `bson:"engine,omitempty"`
+	FaceMatch *FaceMatchResult `bson:"face_match,omitempty"`
+	Failure   string           `bson:"failure_reason,omitempty"`
 
 	OfficerDecision *OfficerDecision `bson:"officer_decision,omitempty"`
 
@@ -246,6 +256,7 @@ type ScreeningView struct {
 	VerdictBand      Verdict          `json:"verdict_band"`
 	RiskScore        int              `json:"risk_score"` // 0–100
 	Engine           *EngineView      `json:"engine,omitempty"`
+	FaceMatch        *FaceMatchResult `json:"face_match,omitempty"`
 	FailureReason    string           `json:"failure_reason,omitempty"`
 	OfficerDecision  *OfficerDecision `json:"officer_decision,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
@@ -281,6 +292,7 @@ func (s *Screening) View() ScreeningView {
 		VerdictBand:      s.Verdict.Band(),
 		RiskScore:        riskTo100(s.Risk),
 		Engine:           engine,
+		FaceMatch:        s.FaceMatch,
 		FailureReason:    s.Failure,
 		OfficerDecision:  s.OfficerDecision,
 		CreatedAt:        s.CreatedAt,

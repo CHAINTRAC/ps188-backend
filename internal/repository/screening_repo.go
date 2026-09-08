@@ -23,11 +23,11 @@ type ScreeningRepository interface {
 	// SetResult records the engine outcome. docType, when non-empty, is written
 	// too — the officer may leave the type for the model to classify.
 	SetResult(ctx context.Context, id string, status model.ScreeningStatus, verdict model.Verdict, risk float64, engine *model.EngineResult, failure string, docType model.DocType) (*model.Screening, error)
-	// SetChecks records advisory flags, blacklist matches, and an adjusted risk
-	// score raised during post-engine checks, and appends any extra evidence
-	// reasons onto engine.reasons. Additive — never clears the engine result or
-	// the verdict.
-	SetChecks(ctx context.Context, id string, flags []string, matches []model.BlacklistMatch, risk float64, appendReasons []string) (*model.Screening, error)
+	// SetChecks records advisory flags, blacklist matches, an adjusted risk
+	// score, and (when run) the face-match result, and appends any extra
+	// evidence reasons onto engine.reasons. Additive — never clears the engine
+	// result or the verdict. faceMatch may be nil when no selfie was submitted.
+	SetChecks(ctx context.Context, id string, flags []string, matches []model.BlacklistMatch, risk float64, appendReasons []string, faceMatch *model.FaceMatchResult) (*model.Screening, error)
 	SetDecision(ctx context.Context, id string, d model.OfficerDecision) (*model.Screening, error)
 	// NextSequence returns a gapless per-day counter used to build reference_no.
 	NextSequence(ctx context.Context, day string) (int64, error)
@@ -149,7 +149,7 @@ func (r *mongoScreeningRepo) SetResult(ctx context.Context, id string, status mo
 	return r.findOneAndUpdate(ctx, oid, bson.M{"$set": set})
 }
 
-func (r *mongoScreeningRepo) SetChecks(ctx context.Context, id string, flags []string, matches []model.BlacklistMatch, risk float64, appendReasons []string) (*model.Screening, error) {
+func (r *mongoScreeningRepo) SetChecks(ctx context.Context, id string, flags []string, matches []model.BlacklistMatch, risk float64, appendReasons []string, faceMatch *model.FaceMatchResult) (*model.Screening, error) {
 	oid, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return nil, apperr.ERRORS.ScreeningNotFound
@@ -161,6 +161,9 @@ func (r *mongoScreeningRepo) SetChecks(ctx context.Context, id string, flags []s
 	}
 	if matches != nil {
 		set["blacklist_matches"] = matches
+	}
+	if faceMatch != nil {
+		set["face_match"] = faceMatch
 	}
 	update := bson.M{"$set": set}
 	if len(appendReasons) > 0 {

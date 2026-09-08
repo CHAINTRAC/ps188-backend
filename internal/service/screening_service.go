@@ -25,8 +25,9 @@ import (
 // never changed and the screening never auto-blocks — these only nudge the score
 // the officer sees. Scale is 0.0–1.0.
 const (
-	riskBumpBlacklist = 0.25
-	riskBumpExpired   = 0.15
+	riskBumpBlacklist    = 0.25
+	riskBumpExpired      = 0.15
+	riskBumpFaceMismatch = 0.30
 )
 
 // SubmitInput is the validated payload for a new screening.
@@ -48,6 +49,10 @@ type SubmitInput struct {
 	ExpiryDate  string
 	ImageName   string
 	Image       []byte
+	// Selfie is optional — a screening submitted without one simply skips the
+	// face-match step (no flag, no risk change).
+	SelfieName string
+	Selfie     []byte
 }
 
 // ScreeningService orchestrates: store image -> call engine -> blacklist/expiry
@@ -167,13 +172,19 @@ func (s *ScreeningService) Submit(ctx context.Context, in SubmitInput) (model.Sc
 	// expiry. A hit raises an advisory flag and bumps the risk score — it never
 	// changes the verdict or blocks the officer.
 	flags, matches, extraReasons, bump := s.postEngineChecks(ctx, in, result)
-	if len(flags) > 0 {
+
+	faceMatch, faceFlags, faceReasons, faceBump := s.runFaceMatch(ctx, in)
+	flags = append(flags, faceFlags...)
+	extraReasons = append(extraReasons, faceReasons...)
+	bump += faceBump
+
+	if len(flags) > 0 || faceMatch != nil {
 		appendReasons := extraReasons
 		if updated.Engine == nil {
 			appendReasons = nil // nothing to append reasons to on a failed engine run
 		}
 		checked, cerr := s.repo.SetChecks(ctx, updated.ID.Hex(), flags, matches,
-			clampRisk(updated.Risk+bump), appendReasons)
+			clampRisk(updated.Risk+bump), appendReasons, faceMatch)
 		if cerr != nil {
 			s.log.WarnContext(ctx, "persisting screening checks failed",
 				slog.String("screening_id", updated.ID.Hex()), slog.String("error", cerr.Error()))
@@ -250,6 +261,41 @@ func (s *ScreeningService) postEngineChecks(ctx context.Context, in SubmitInput,
 	}
 
 	return flags, matches, reasons, bump
+}
+
+// runFaceMatch compares the selfie against the document image when one was
+// submitted. It runs independently of engine.Screen (still runs even if
+// /verify failed), and a failure here is logged and swallowed, same
+// non-blocking spirit as the blacklist check.
+func (s *ScreeningService) runFaceMatch(ctx context.Context, in SubmitInput) (result *model.FaceMatchResult, flags []string, reasons []string, bump float64) {
+	if len(in.Selfie) == 0 {
+		return nil, nil, nil, 0
+	}
+
+	fr, err := s.engine.MatchFace(ctx, screening.FaceMatchRequest{
+		DocImage:       in.Image,
+		DocFilename:    in.ImageName,
+		Selfie:         in.Selfie,
+		SelfieFilename: in.SelfieName,
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "face match failed", slog.String("error", err.Error()))
+		return nil, nil, nil, 0
+	}
+
+	result = &model.FaceMatchResult{
+		IsMatch:         fr.IsMatch,
+		SimilarityScore: fr.SimilarityScore,
+		Threshold:       fr.Threshold,
+		Message:         fr.Message,
+	}
+	if !fr.IsMatch {
+		flags = append(flags, model.FlagFaceMismatch)
+		bump = riskBumpFaceMismatch
+		reasons = append(reasons, fmt.Sprintf("Face match failed (%.0f%% similarity, threshold %.0f%%)",
+			fr.SimilarityScore*100, fr.Threshold*100))
+	}
+	return result, flags, reasons, bump
 }
 
 func (s *ScreeningService) Get(ctx context.Context, id string) (model.ScreeningView, error) {

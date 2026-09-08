@@ -36,9 +36,24 @@ type ScreenResult struct {
 	RawEvidence map[string]any
 }
 
-// Engine screens one document image. Implementations must return an
-// *apperr.AppError (ScreeningEngineUnavailable / ScreeningEngineBadResponse) on
-// any transport or protocol failure — never a bare error.
+type FaceMatchRequest struct {
+	DocImage       []byte
+	DocFilename    string
+	Selfie         []byte
+	SelfieFilename string
+}
+
+type FaceMatchResult struct {
+	IsMatch         bool
+	SimilarityScore float64
+	Threshold       float64
+	Message         string
+}
+
+// Engine screens one document image and, separately, compares a live selfie
+// against it. Implementations must return an *apperr.AppError on any
+// transport or protocol failure — never a bare error.
 type Engine interface {
 	Screen(ctx context.Context, req ScreenRequest) (*ScreenResult, error)
+	MatchFace(ctx context.Context, req FaceMatchRequest) (*FaceMatchResult, error)
 }

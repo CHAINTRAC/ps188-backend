@@ -18,6 +18,13 @@ import (
 
 func TestHTTPEngine_Screen_OK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Screen fans out to /extract-ocr in parallel for real field values —
+		// give it a harmless response so it doesn't affect this verdict-focused test.
+		if r.URL.Path == "/api/v1/extract-ocr" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":true,"document_type":{"type":"passport"},"parsed_fields":{}}`))
+			return
+		}
 		if r.URL.Path != "/api/v1/verify" || r.Method != http.MethodPost {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -38,7 +45,7 @@ func TestHTTPEngine_Screen_OK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	eng := screening.NewHTTPEngine(srv.URL, "k3y", 5*time.Second)
+	eng := screening.NewHTTPEngine(srv.URL, "k3y", 5*time.Second, nil)
 	res, err := eng.Screen(context.Background(), screening.ScreenRequest{
 		DocType: model.DocPassport, DocNumber: "Z1234567",
 		Filename: "p.jpg", Image: []byte{0xff, 0xd8, 0xff},
@@ -77,7 +84,7 @@ func TestHTTPEngine_Screen_StructuredFieldsAndTone(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second, nil)
 	res, err := eng.Screen(context.Background(), screening.ScreenRequest{
 		DocType: model.DocPassport, Filename: "p.jpg", Image: []byte{0xff, 0xd8, 0xff},
 	})
@@ -105,7 +112,7 @@ func TestHTTPEngine_Screen_FlatExtractedFieldsMap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second, nil)
 	res, err := eng.Screen(context.Background(), screening.ScreenRequest{
 		DocType: model.DocPassport, Filename: "p.jpg", Image: []byte{0xff, 0xd8, 0xff},
 	})
@@ -125,7 +132,7 @@ func TestHTTPEngine_Screen_Non200(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second, nil)
 	_, err := eng.Screen(context.Background(), screening.ScreenRequest{
 		DocType: model.DocPassport, Filename: "p.jpg", Image: []byte{1},
 	})
@@ -150,7 +157,7 @@ func TestHTTPEngine_Screen_NationalIDDocType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second, nil)
 	if _, err := eng.Screen(context.Background(), screening.ScreenRequest{
 		DocType: model.DocNationalID, Filename: "a.jpg", Image: []byte{0xff, 0xd8, 0xff},
 	}); err != nil {
@@ -164,7 +171,7 @@ func TestHTTPEngine_Screen_BadJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	eng := screening.NewHTTPEngine(srv.URL, "", time.Second)
+	eng := screening.NewHTTPEngine(srv.URL, "", time.Second, nil)
 	_, err := eng.Screen(context.Background(), screening.ScreenRequest{
 		DocType: model.DocPassport, Filename: "p.jpg", Image: []byte{1},
 	})

@@ -6,19 +6,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sih26/ps188-backend/internal/apperr"
 	"github.com/sih26/ps188-backend/internal/model"
 )
 
-// verifyPath is the endpoint exposed by passport-model/server.py
-// (https://passport-model.onrender.com/docs).
-const verifyPath = "/api/v1/verify"
+// Endpoints exposed by passport-model/server.py (see /docs on the deployed
+// instance for the live OpenAPI schema).
+const (
+	verifyPath     = "/api/v1/verify"
+	extractOCRPath = "/api/v1/extract-ocr"
+	matchFacePath  = "/api/v1/match-face"
+)
 
 // httpEngine calls a hosted FastAPI wrapper around predict_pipeline.py:
 //
@@ -31,14 +37,19 @@ type httpEngine struct {
 	baseURL string
 	apiKey  string
 	client  *http.Client
+	log     *slog.Logger
 }
 
 // NewHTTPEngine builds the real screening client.
-func NewHTTPEngine(baseURL, apiKey string, timeout time.Duration) Engine {
+func NewHTTPEngine(baseURL, apiKey string, timeout time.Duration, log *slog.Logger) Engine {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &httpEngine{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		client:  &http.Client{Timeout: timeout},
+		log:     log,
 	}
 }
 
@@ -81,21 +92,37 @@ func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResu
 		httpReq.Header.Set("X-API-Key", e.apiKey)
 	}
 
-	resp, err := e.client.Do(httpReq)
-	if err != nil {
-		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(err)
-	}
-	defer resp.Body.Close()
+	// /verify never carries raw field values (doc_number, name, dates) — those
+	// only come from /extract-ocr, fetched here in parallel and merged in below.
+	var (
+		wg         sync.WaitGroup
+		ocrFields  []model.ExtractedField
+		verifyResp *http.Response
+		verifyErr  error
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ocrFields = e.extractOCR(ctx, req)
+	}()
 
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode != http.StatusOK {
+	verifyResp, verifyErr = e.client.Do(httpReq)
+	wg.Wait()
+
+	if verifyErr != nil {
+		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(verifyErr)
+	}
+	defer verifyResp.Body.Close()
+
+	raw, _ := io.ReadAll(io.LimitReader(verifyResp.Body, 4<<20))
+	if verifyResp.StatusCode != http.StatusOK {
 		detail := truncate(raw, 300)
 		var er errorResponse
 		if json.Unmarshal(raw, &er) == nil && er.Error.Code != "" {
 			detail = er.Error.Code + ": " + er.Error.Message
 		}
 		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(
-			fmt.Errorf("engine status %d — %s", resp.StatusCode, detail))
+			fmt.Errorf("engine status %d — %s", verifyResp.StatusCode, detail))
 	}
 
 	var pr predictResponse
@@ -114,15 +141,138 @@ func (e *httpEngine) Screen(ctx context.Context, req ScreenRequest) (*ScreenResu
 		evidence = DeriveEvidence(pr.Reasons, pr.RiskScore)
 	}
 
+	fields := parseExtractedFields(pr.ExtractedFields)
+	if len(fields) == 0 {
+		fields = ocrFields
+	}
+
 	return &ScreenResult{
 		Verdict:         verdict,
 		DocType:         docTypeFromParam(pr.DocType),
 		RiskScore:       pr.RiskScore,
 		Reasons:         pr.Reasons,
-		ExtractedFields: parseExtractedFields(pr.ExtractedFields),
+		ExtractedFields: fields,
 		EvidenceItems:   evidence,
 		RawEvidence:     pr.EvidenceTable,
 	}, nil
+}
+
+type ocrExtractResponse struct {
+	Success      bool           `json:"success"`
+	ParsedFields map[string]any `json:"parsed_fields"`
+}
+
+// extractOCR failures are logged and swallowed — the fields are an
+// enhancement, not a requirement for the verdict.
+func (e *httpEngine) extractOCR(ctx context.Context, req ScreenRequest) []model.ExtractedField {
+	body, contentType, err := buildOCRMultipart(req)
+	if err != nil {
+		e.log.WarnContext(ctx, "extract-ocr: building request failed", slog.String("error", err.Error()))
+		return nil
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+extractOCRPath, body)
+	if err != nil {
+		e.log.WarnContext(ctx, "extract-ocr: building request failed", slog.String("error", err.Error()))
+		return nil
+	}
+	httpReq.Header.Set("Content-Type", contentType)
+	if e.apiKey != "" {
+		httpReq.Header.Set("X-API-Key", e.apiKey)
+	}
+
+	resp, err := e.client.Do(httpReq)
+	if err != nil {
+		e.log.WarnContext(ctx, "extract-ocr: request failed", slog.String("error", err.Error()))
+		return nil
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != http.StatusOK {
+		e.log.WarnContext(ctx, "extract-ocr: non-200 response", slog.Int("status", resp.StatusCode))
+		return nil
+	}
+
+	var or ocrExtractResponse
+	if err := json.Unmarshal(raw, &or); err != nil {
+		e.log.WarnContext(ctx, "extract-ocr: bad JSON", slog.String("error", err.Error()))
+		return nil
+	}
+
+	fields := make([]model.ExtractedField, 0, len(or.ParsedFields))
+	for label, v := range or.ParsedFields {
+		if v == nil {
+			continue
+		}
+		var value string
+		switch t := v.(type) {
+		case string:
+			value = t
+		case bool, float64:
+			value = fmt.Sprintf("%v", t)
+		default:
+			continue // skip nested objects (e.g. mrz raw blob) — not a flat field
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		fields = append(fields, model.ExtractedField{Label: label, Value: value})
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i].Label < fields[j].Label })
+	return fields
+}
+
+func (e *httpEngine) MatchFace(ctx context.Context, req FaceMatchRequest) (*FaceMatchResult, error) {
+	body, contentType, err := buildFaceMatchMultipart(req)
+	if err != nil {
+		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+matchFacePath, body)
+	if err != nil {
+		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(err)
+	}
+	httpReq.Header.Set("Content-Type", contentType)
+	if e.apiKey != "" {
+		httpReq.Header.Set("X-API-Key", e.apiKey)
+	}
+
+	resp, err := e.client.Do(httpReq)
+	if err != nil {
+		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		detail := truncate(raw, 300)
+		var er errorResponse
+		if json.Unmarshal(raw, &er) == nil && er.Error.Code != "" {
+			detail = er.Error.Code + ": " + er.Error.Message
+		}
+		return nil, apperr.ERRORS.ScreeningEngineUnavailable.Wrap(
+			fmt.Errorf("face-match status %d — %s", resp.StatusCode, detail))
+	}
+
+	var fr faceMatchResponse
+	if err := json.Unmarshal(raw, &fr); err != nil {
+		return nil, apperr.ERRORS.ScreeningEngineBadResponse.Wrap(err)
+	}
+
+	return &FaceMatchResult{
+		IsMatch:         fr.IsMatch,
+		SimilarityScore: fr.SimilarityScore,
+		Threshold:       fr.Threshold,
+		Message:         fr.Message,
+	}, nil
+}
+
+type faceMatchResponse struct {
+	Success         bool    `json:"success"`
+	IsMatch         bool    `json:"is_match"`
+	SimilarityScore float64 `json:"similarity_score"`
+	Threshold       float64 `json:"threshold"`
+	Message         string  `json:"message"`
 }
 
 // docTypeFromParam is the inverse of docTypeParam — it maps the model's
@@ -211,15 +361,69 @@ func buildMultipart(req ScreenRequest) (io.Reader, string, error) {
 	return &buf, w.FormDataContentType(), nil
 }
 
+// buildOCRMultipart mirrors buildMultipart for /extract-ocr, which only takes
+// the image and doc_type (no doc_number/MRZ hints).
+func buildOCRMultipart(req ScreenRequest) (io.Reader, string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	fw, err := w.CreateFormFile("image", req.Filename)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := fw.Write(req.Image); err != nil {
+		return nil, "", err
+	}
+	if dt := docTypeParam(req.DocType); dt != "" {
+		if err := w.WriteField("doc_type", dt); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	return &buf, w.FormDataContentType(), nil
+}
+
+// buildFaceMatchMultipart builds the /match-face request: selfie + document
+// image, both required by the model's schema.
+func buildFaceMatchMultipart(req FaceMatchRequest) (io.Reader, string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	sf, err := w.CreateFormFile("selfie", req.SelfieFilename)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := sf.Write(req.Selfie); err != nil {
+		return nil, "", err
+	}
+
+	df, err := w.CreateFormFile("passport_image", req.DocFilename)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := df.Write(req.DocImage); err != nil {
+		return nil, "", err
+	}
+
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	return &buf, w.FormDataContentType(), nil
+}
+
 // docTypeParam maps our doc types onto the values server.py accepts
-// (ALLOWED_DOC_TYPES = {"auto", "passport", "aadhaar"}). Anything else is sent
-// as "auto" and the pipeline routes it.
+// (ALLOWED_DOC_TYPES = {"auto", "passport", "aadhaar", "dl"}). Anything else is
+// sent as "auto" and the pipeline routes it.
 func docTypeParam(d model.DocType) string {
 	switch d {
 	case model.DocPassport:
 		return "passport"
 	case model.DocNationalID:
 		return "aadhaar"
+	case model.DocDrivingLicense:
+		return "dl"
 	default:
 		return "auto"
 	}

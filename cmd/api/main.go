@@ -67,7 +67,7 @@ func run(log *slog.Logger) error {
 		engine = &screening.MockEngine{}
 		log.Warn("screening engine: using MOCK implementation")
 	default:
-		engine = screening.NewHTTPEngine(cfg.ScreeningServiceURL, cfg.ScreeningAPIKey, cfg.ScreeningTimeout)
+		engine = screening.NewHTTPEngine(cfg.ScreeningServiceURL, cfg.ScreeningAPIKey, cfg.ScreeningTimeout, log)
 		log.Info("screening engine: http", slog.String("url", cfg.ScreeningServiceURL))
 	}
 

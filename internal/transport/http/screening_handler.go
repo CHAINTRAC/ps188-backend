@@ -53,6 +53,37 @@ func (h *screeningHandler) submit(c *gin.Context) {
 		return
 	}
 
+	// Selfie is optional — its absence just skips the face-match step
+	// downstream, it never blocks submission.
+	var selfieName string
+	var selfieData []byte
+	if sfh, sErr := c.FormFile("selfie"); sErr == nil {
+		if sfh.Size > h.maxUpload {
+			middleware.Fail(c, apperr.ERRORS.FileTooLarge)
+			return
+		}
+		sf, err := sfh.Open()
+		if err != nil {
+			middleware.Fail(c, apperr.ERRORS.StorageFailed.Wrap(err))
+			return
+		}
+		selfieData, err = io.ReadAll(io.LimitReader(sf, h.maxUpload+1))
+		sf.Close()
+		if err != nil {
+			middleware.Fail(c, apperr.ERRORS.StorageFailed.Wrap(err))
+			return
+		}
+		if int64(len(selfieData)) > h.maxUpload {
+			middleware.Fail(c, apperr.ERRORS.FileTooLarge)
+			return
+		}
+		if ct := nethttp.DetectContentType(selfieData); ct != "image/jpeg" && ct != "image/png" {
+			middleware.Fail(c, apperr.ERRORS.InvalidFileType)
+			return
+		}
+		selfieName = sfh.Filename
+	}
+
 	actor, _ := middleware.Principal(c)
 	// The verifier's checkpoint and region come from the token (stamped at
 	// account creation), not the request — the officer works one checkpoint.
@@ -75,6 +106,8 @@ func (h *screeningHandler) submit(c *gin.Context) {
 		ExpiryDate:   c.PostForm("expiry_date"),
 		ImageName:    fh.Filename,
 		Image:        data,
+		SelfieName:   selfieName,
+		Selfie:       selfieData,
 	})
 	if err != nil {
 		middleware.Fail(c, err)

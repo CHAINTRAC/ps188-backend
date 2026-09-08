@@ -26,15 +26,16 @@ func newScreeningSvc(t *testing.T, engine screening.Engine) *service.ScreeningSe
 func newScreeningSvcWithBlacklist(t *testing.T, engine screening.Engine) (*service.ScreeningService, *service.BlacklistService) {
 	t.Helper()
 	db := testsupport.RequireMongo(t)
-	bl := service.NewBlacklistService(
-		repository.NewBlacklistRepository(db),
-		repository.NewAuditRepository(db),
-	)
 	// Local storage (the production default) — t.TempDir() self-cleans.
 	files, err := storage.NewLocalFileStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("local file store: %v", err)
 	}
+	bl := service.NewBlacklistService(
+		repository.NewBlacklistRepository(db),
+		repository.NewAuditRepository(db),
+		files,
+	)
 	scr := service.NewScreeningService(
 		repository.NewScreeningRepository(db),
 		repository.NewAuditRepository(db),
